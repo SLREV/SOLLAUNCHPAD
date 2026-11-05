@@ -131,8 +131,8 @@ function ok(cond, msg) { if (!cond) throw new Error('ASSERT FAIL: ' + msg); cons
   currentLabel = 'create';
   await page.fill('#form-create [name=name]', 'Test Token');
   await page.fill('#form-create [name=symbol]', 'TST');
-  await page.fill('#form-create [name=decimals]', '6');
-  await page.fill('#form-create [name=initialSupply]', '12345');
+  await page.fill('#form-create [name=decimals]', '9');
+  await page.fill('#form-create [name=initialSupply]', '21000000');
   await page.click('#btn-create');
   await page.waitForSelector('#create-result .result-box', { timeout: 60000 });
   ok((await page.textContent('#create-result .result-title')).trim() === 'TOKEN BERHASIL DIBUAT', 'result box TOKEN BERHASIL DIBUAT');
@@ -161,13 +161,14 @@ function ok(cond, msg) { if (!cond) throw new Error('ASSERT FAIL: ' + msg); cons
     const space = Number(ixCreate.data.readBigUInt64LE(12));
     ok(space === 82, 'space mint = 82');
     ok(ixCreate.keys[1].isSigner, 'mint adalah signer');
-    const refInit = spl.createInitializeMintInstruction(mintPk, 6, testKp.publicKey, null);
-    ok(Buffer.compare(ixInit.data, refInit.data) === 0 && ixInit.programId.equals(spl.TOKEN_PROGRAM_ID), 'ix2 InitializeMint identik dgn spl-token (decimals 6)');
+    const refInit = spl.createInitializeMintInstruction(mintPk, 9, testKp.publicKey, null);
+    ok(Buffer.compare(ixInit.data, refInit.data) === 0 && ixInit.programId.equals(spl.TOKEN_PROGRAM_ID), 'ix2 InitializeMint identik dgn spl-token (decimals 9)');
     const ata = spl.getAssociatedTokenAddressSync(mintPk, testKp.publicKey);
     const refAta = spl.createAssociatedTokenAccountInstruction(testKp.publicKey, ata, testKp.publicKey, mintPk);
     ok(ixAta.programId.equals(spl.ASSOCIATED_TOKEN_PROGRAM_ID) && ixAta.keys.length === 6 && ixAta.keys.every((k, i) => k.pubkey.equals(refAta.keys[i].pubkey)) && ixAta.data.length === 0, 'ix3 CreateATA identik (payer, ata, owner, mint, system, token)');
-    const refMintTo = spl.createMintToInstruction(mintPk, ata, testKp.publicKey, 12345 * 1e6);
-    ok(Buffer.compare(ixMint.data, refMintTo.data) === 0, 'ix4 MintTo amount = 12345 × 10^6');
+    const exactAmount = 21000000n * 10n ** 9n; // > Number.MAX_SAFE_INTEGER; must remain exact
+    const refMintTo = spl.createMintToInstruction(mintPk, ata, testKp.publicKey, exactAmount);
+    ok(Buffer.compare(ixMint.data, refMintTo.data) === 0, 'ix4 MintTo amount = 21,000,000 × 10^9 exactly (above Number.MAX_SAFE_INTEGER)');
   }
 
   console.log('\n[6] TOKEN LIST');
@@ -175,9 +176,9 @@ function ok(cond, msg) { if (!cond) throw new Error('ASSERT FAIL: ' + msg); cons
   ok((await page.locator('#token-list tbody tr').count()) === 1, '1 baris token');
   ok((await page.textContent('#token-list tbody tr td:nth-child(1)')).trim() === 'Test Token', 'nama = Test Token');
   ok((await page.textContent('#token-list tbody tr td.sym')).trim() === 'TST', 'symbol = TST');
-  ok((await page.textContent('#token-list tbody tr td.sup')).trim() === '12345', 'supply = 12345');
+  ok((await page.textContent('#token-list tbody tr td.sup')).trim() === '21000000', 'supply = 21000000');
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('token-creator-tokens')));
-  ok(stored.length === 1 && stored[0].mint === createdMint && stored[0].decimals === 6, 'localStorage token-creator-tokens tersimpan');
+  ok(stored.length === 1 && stored[0].mint === createdMint && stored[0].decimals === 9, 'localStorage token-creator-tokens tersimpan');
   await page.screenshot({ path: `${SHOTS}/03-token-list.png`, fullPage: true });
 
   console.log('\n[7] CLONE TOKEN (AMBIL DATA dari devnet asli)');
@@ -236,7 +237,7 @@ function ok(cond, msg) { if (!cond) throw new Error('ASSERT FAIL: ' + msg); cons
     ok(ixCreate.keys[1].pubkey && Number(ixCreate.data.readBigUInt64LE(12)) === 278, 'space = 278 (mint + TransferFeeConfig)');
     ok(new PublicKey(ixCreate.data.slice(20, 52)).equals(spl.TOKEN_2022_PROGRAM_ID), 'owner akun = Token-2022 program');
     const mintPk = ixCreate.keys[1].pubkey;
-    const refFee = spl.createInitializeTransferFeeConfigInstruction(mintPk, testKp.publicKey, testKp.publicKey, 250, 5000000n, spl.TOKEN_2022_PROGRAM_ID);
+    const refFee = spl.createInitializeTransferFeeConfigInstruction(mintPk, null, testKp.publicKey, 250, 5000000n, spl.TOKEN_2022_PROGRAM_ID);
     ok(Buffer.compare(ixFee.data, refFee.data) === 0 && ixFee.programId.equals(spl.TOKEN_2022_PROGRAM_ID), 'ix2 InitializeTransferFeeConfig identik (sebelum InitializeMint)');
     const refInit = spl.createInitializeMintInstruction(mintPk, 9, testKp.publicKey, null, spl.TOKEN_2022_PROGRAM_ID);
     ok(Buffer.compare(ixInit.data, refInit.data) === 0 && ixInit.programId.equals(spl.TOKEN_2022_PROGRAM_ID), 'ix3 InitializeMint (Token-2022)');
@@ -281,9 +282,10 @@ function ok(cond, msg) { if (!cond) throw new Error('ASSERT FAIL: ' + msg); cons
   ok((await page.textContent('#auth-error .error-box')).includes('Mint address required'), 'error "Mint address required"');
   await page.screenshot({ path: `${SHOTS}/06-authority.png`, fullPage: true });
 
-  console.log('\n[10] JUPITER SWAP (quote asli dari lite-api.jup.ag)');
+  console.log('\n[10] JUPITER SWAP (quote asli dari lite-api.jup.ag; mainnet only)');
   currentLabel = 'swap';
   await page.click('.tab[data-tab="swap"]');
+  await page.click('#btn-mainnet');
   ok(await page.locator('#btn-swap').isDisabled(), 'EXECUTE SWAP disabled sebelum quote');
   await page.fill('#form-swap [name=outputMint]', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
   await page.fill('#form-swap [name=amount]', '0.01');
@@ -293,7 +295,6 @@ function ok(cond, msg) { if (!cond) throw new Error('ASSERT FAIL: ' + msg); cons
   if (hasQuote) {
     ok(true, 'QUOTE DITERIMA: ' + (await page.textContent('#swap-quote .kv-grid')).replace(/\s+/g, ' ').trim());
     ok(await page.locator('#btn-swap').isEnabled(), 'EXECUTE SWAP enabled');
-    await page.click('#btn-mainnet'); // swap SOL→USDC adalah mainnet
     await page.click('#btn-swap');
     await page.waitForSelector('#swap-result .result-box, #swap-error .error-box', { timeout: 90000 });
     if ((await page.locator('#swap-result .result-box').count()) > 0) {
@@ -306,10 +307,10 @@ function ok(cond, msg) { if (!cond) throw new Error('ASSERT FAIL: ' + msg); cons
     } else {
       console.log('  ⚠ swap error (diharapkan bila wallet kosong):', (await page.textContent('#swap-error .error-box')).trim());
     }
-    await page.click('#btn-devnet');
   } else {
     console.log('  ⚠ quote error:', (await page.textContent('#swap-error .error-box')).trim());
   }
+  await page.click('#btn-devnet');
   await page.screenshot({ path: `${SHOTS}/07-swap.png`, fullPage: true });
 
   console.log('\n[11] LIQUIDITY CPMM — lazy load Raydium SDK');

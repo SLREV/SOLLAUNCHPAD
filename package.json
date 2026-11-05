@@ -8,6 +8,7 @@
     "start": "node server.js",
     "dev": "node server.js",
     "build:vendor": "node scripts/build-vendor.js",
+    "test": "node --test scripts/tests/*.test.js",
     "verify": "node scripts/verify-spl-token.js",
     "e2e": "node scripts/e2e.js",
     "e2e:localnet": "node scripts/e2e-localnet.js"

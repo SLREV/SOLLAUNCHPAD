@@ -187,10 +187,18 @@ ul { padding: 0; }
 .c-cyan.chip   { color: var(--cyan-400); }   .c-cyan.chip:hover   { color: var(--cyan-300); }
 
 .status-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; gap: 12px; }
-.status-left { display: flex; align-items: center; gap: 12px; }
+.status-left { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .dot { width: 8px; height: 8px; border-radius: 9999px; background: var(--green-500); }
 .status-addr { font-size: 12px; line-height: 16px; color: var(--gray-400); }
+.status-balance { font-size: 12px; line-height: 16px; color: var(--green-400); }
+.balance-refresh { width: 24px; height: 24px; border: 1px solid var(--gray-700); border-radius: 4px; color: var(--cyan-400); font-size: 16px; line-height: 20px; }
+.balance-refresh:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); }
+.balance-refresh:disabled { opacity: .45; cursor: not-allowed; }
 .status-net { font-size: 12px; line-height: 16px; color: var(--gray-500); text-align: right; }
+@media (max-width: 600px) {
+  .status-bar { align-items: flex-start; flex-direction: column; }
+  .status-net { text-align: left; }
+}
 
 /* ---------- Section / Card ---------- */
 .section { display: none; margin-bottom: 32px; }

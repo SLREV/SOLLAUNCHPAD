@@ -1,23 +1,17 @@
 /**
- * server.js — Server statis ringan untuk SOLLAUNCHPAD (tanpa dependensi, hanya modul bawaan Node.js).
+ * Lightweight static server for SOLLAUNCHPAD (Node.js built-ins only).
  *
- *   node server.js            → http://localhost:3000
- *   PORT=8080 node server.js  → port lain
+ *   node server.js            -> http://localhost:3000
+ *   PORT=8080 node server.js  -> another port
  *
- * Opsional: buat file .env (lihat .env.example) untuk mengganti RPC URL.
- * Nilai tersebut disuntikkan ke /js/config.js saat disajikan.
+ * Optional .env values are injected into the browser config. RPC URLs and API keys
+ * served this way are public to every visitor; use browser-restricted credentials.
  */
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = path.join(__dirname, 'public');
-const env = loadEnv(path.join(__dirname, '.env'));
-const PORT = parseInt(process.env.PORT || env.PORT || '3000', 10);
-const HOST = process.env.HOST || env.HOST || '0.0.0.0';
-const RPC_DEVNET = process.env.RPC_DEVNET || env.RPC_DEVNET || '';
-const RPC_MAINNET = process.env.RPC_MAINNET || env.RPC_MAINNET || '';
-
+const DEFAULT_ROOT = path.resolve(__dirname, 'public');
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -26,12 +20,13 @@ const MIME = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
   '.ico': 'image/x-icon',
   '.map': 'application/json',
   '.txt': 'text/plain; charset=utf-8',
 };
 
-/** Parser .env sederhana (KEY=VALUE, abaikan komentar) */
+/** Simple KEY=VALUE .env parser. */
 function loadEnv(file) {
   const out = {};
   try {
@@ -49,56 +44,127 @@ function loadEnv(file) {
       out[key] = value;
     }
   } catch (_) {
-    /* .env tidak ada → pakai default */
+    // Missing .env is expected; process.env and defaults are used instead.
   }
   return out;
 }
 
-/** Sisipkan RPC override dari .env ke config.js tanpa mengubah file aslinya */
-function serveConfig(res) {
-  let js = fs.readFileSync(path.join(ROOT, 'js', 'config.js'), 'utf8');
-  if (RPC_DEVNET) js = js.replace(/devnet:\s*'[^']*'/, `devnet: '${RPC_DEVNET}'`);
-  if (RPC_MAINNET) js = js.replace(/'mainnet-beta':\s*'[^']*'/, `'mainnet-beta': '${RPC_MAINNET}'`);
-  res.writeHead(200, { 'Content-Type': MIME['.js'], 'Cache-Control': 'no-cache' });
-  res.end(js);
+function isInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-const server = http.createServer((req, res) => {
-  const urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
-  let filePath = path.normalize(path.join(ROOT, urlPath === '/' ? 'index.html' : urlPath));
+function sendText(res, status, message) {
+  res.writeHead(status, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(message);
+}
 
-  // Cegah path traversal keluar dari folder public
-  if (!filePath.startsWith(ROOT)) {
-    res.writeHead(403);
-    return res.end('Forbidden');
+/** Create a server instance; exported for deterministic HTTP tests. */
+function createServer(options) {
+  const opts = options || {};
+  const root = path.resolve(opts.root || DEFAULT_ROOT);
+  const rootReal = fs.realpathSync(root);
+  const rpcDevnet = opts.rpcDevnet || '';
+  const rpcMainnet = opts.rpcMainnet || '';
+  const jupiterApiKey = opts.jupiterApiKey || '';
+
+  function serveConfig(req, res) {
+    const configPath = path.join(root, 'js', 'config.js');
+    fs.realpath(configPath, (realErr, configReal) => {
+      if (realErr) return sendText(res, 404, '404 Not Found');
+      if (!isInside(rootReal, configReal)) return sendText(res, 403, '403 Forbidden');
+      fs.readFile(configReal, 'utf8', (readErr, source) => {
+        if (readErr) return sendText(res, 404, '404 Not Found');
+        let js = source;
+        // Serialize values as JavaScript string literals instead of interpolating raw text.
+        if (rpcDevnet) {
+          js = js.replace(/(devnet:\s*)'[^']*'/, (_match, prefix) => prefix + JSON.stringify(rpcDevnet));
+        }
+        if (rpcMainnet) {
+          js = js.replace(/('mainnet-beta':\s*)'[^']*'/, (_match, prefix) => prefix + JSON.stringify(rpcMainnet));
+        }
+        if (jupiterApiKey) {
+          js = js.replace(/(JUPITER_API_KEY:\s*)'[^']*'/, (_match, prefix) => prefix + JSON.stringify(jupiterApiKey));
+        }
+        res.writeHead(200, {
+          'Content-Type': MIME['.js'],
+          'Cache-Control': 'no-cache',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        res.end(req.method === 'HEAD' ? undefined : js);
+      });
+    });
   }
 
-  if (urlPath === '/js/config.js') return serveConfig(res);
+  return http.createServer((req, res) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      res.writeHead(405, { Allow: 'GET, HEAD', 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('405 Method Not Allowed');
+    }
 
-  fs.stat(filePath, (err, stat) => {
-    if (!err && stat.isDirectory()) filePath = path.join(filePath, 'index.html');
-    fs.readFile(filePath, (readErr, data) => {
-      if (readErr) {
-        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-        return res.end('404 Not Found');
-      }
-      const ext = path.extname(filePath).toLowerCase();
-      const isVendor = filePath.includes(`${path.sep}vendor${path.sep}`);
-      res.writeHead(200, {
-        'Content-Type': MIME[ext] || 'application/octet-stream',
-        // vendor (web3 / raydium) boleh di-cache lama oleh browser; file app selalu dicek ulang
-        'Cache-Control': isVendor ? 'public, max-age=604800' : 'no-cache',
+    let urlPath;
+    try {
+      urlPath = decodeURIComponent(new URL(req.url || '/', 'http://localhost').pathname);
+    } catch (_) {
+      return sendText(res, 400, '400 Bad Request');
+    }
+    if (urlPath.includes('\0')) return sendText(res, 400, '400 Bad Request');
+
+    // Treat backslashes as separators too, so traversal is blocked consistently across platforms.
+    const relativePath = urlPath.replace(/\\/g, '/').replace(/^\/+/, '') || 'index.html';
+    let filePath = path.resolve(root, relativePath);
+    if (!isInside(root, filePath)) return sendText(res, 403, '403 Forbidden');
+
+    if (urlPath === '/js/config.js') return serveConfig(req, res);
+
+    fs.stat(filePath, (statErr, stat) => {
+      if (statErr) return sendText(res, 404, '404 Not Found');
+      if (stat.isDirectory()) filePath = path.join(filePath, 'index.html');
+
+      // Resolve symlinks before reading so a link inside public cannot expose sibling files.
+      fs.realpath(filePath, (realErr, realPath) => {
+        if (realErr) return sendText(res, 404, '404 Not Found');
+        if (!isInside(rootReal, realPath)) return sendText(res, 403, '403 Forbidden');
+
+        fs.readFile(realPath, (readErr, data) => {
+          if (readErr) return sendText(res, 404, '404 Not Found');
+          const ext = path.extname(realPath).toLowerCase();
+          res.writeHead(200, {
+            'Content-Type': MIME[ext] || 'application/octet-stream',
+            // Assets use stable URLs, so always revalidate instead of serving stale vendor bundles.
+            'Cache-Control': 'no-cache',
+            'X-Content-Type-Options': 'nosniff',
+          });
+          res.end(req.method === 'HEAD' ? undefined : data);
+        });
       });
-      res.end(data);
     });
   });
-});
+}
 
-server.listen(PORT, HOST, () => {
-  console.log('');
-  console.log('  SOLLAUNCHPAD — Solana Token Launchpad (lite)');
-  console.log(`  ➜  http://localhost:${PORT}`);
-  if (RPC_DEVNET) console.log(`  RPC devnet  : ${RPC_DEVNET}`);
-  if (RPC_MAINNET) console.log(`  RPC mainnet : ${RPC_MAINNET}`);
-  console.log('');
-});
+if (require.main === module) {
+  const env = loadEnv(path.join(__dirname, '.env'));
+  const parsedPort = Number.parseInt(process.env.PORT || env.PORT || '3000', 10);
+  const port = Number.isInteger(parsedPort) && parsedPort >= 0 && parsedPort <= 65535 ? parsedPort : 3000;
+  const host = process.env.HOST || env.HOST || '0.0.0.0';
+  const rpcDevnet = process.env.RPC_DEVNET || env.RPC_DEVNET || '';
+  const rpcMainnet = process.env.RPC_MAINNET || env.RPC_MAINNET || '';
+  const jupiterApiKey = process.env.JUPITER_API_KEY || env.JUPITER_API_KEY || '';
+  const server = createServer({ rpcDevnet, rpcMainnet, jupiterApiKey });
+
+  server.listen(port, host, () => {
+    const address = server.address();
+    const listeningPort = address && typeof address === 'object' ? address.port : port;
+    console.log('');
+    console.log('  SOLLAUNCHPAD — Solana Token Launchpad (lite)');
+    console.log(`  ➜  http://localhost:${listeningPort}`);
+    if (rpcDevnet) console.log(`  RPC devnet  : ${rpcDevnet}`);
+    if (rpcMainnet) console.log(`  RPC mainnet : ${rpcMainnet}`);
+    console.log('');
+  });
+}
+
+module.exports = { createServer, loadEnv, isInside };

@@ -34,13 +34,15 @@ agar ekstensi wallet (Phantom/Solflare) bisa meng-inject provider-nya.
 ```
 sollaunchpad-lite/
 ├── server.js                 # Server statis ringan (http + fs + path), baca .env opsional
-├── package.json              # scripts: start, build:vendor, verify (devDependencies hanya untuk build vendor)
-├── .env.example              # RPC_DEVNET / RPC_MAINNET / PORT (opsional)
+├── package.json              # scripts: start, test, build:vendor, verify
+├── .env.example              # RPC_DEVNET / RPC_MAINNET / JUPITER_API_KEY (opsional)
+├── .gitignore                # .env, node_modules, dan hasil uji lokal
 ├── public/
 │   ├── index.html            # Dashboard: 8 tab (port dari TokenDashboard.tsx + AuthorityRevoker.tsx)
 │   ├── css/style.css         # Tema cyberpunk/neon (pengganti Tailwind)
 │   ├── js/
-│   │   ├── config.js         # RPC URL, konstanta, endpoint Jupiter, kunci localStorage
+│   │   ├── config.js         # RPC URL, endpoint Jupiter, kunci localStorage
+│   │   ├── amounts.js        # Konversi unit token presisi penuh (BigInt; tanpa floating-point)
 │   │   ├── wallet.js         # Pengganti wallet-adapter (connect/disconnect/sign/send)
 │   │   ├── spl-token.js      # Pengganti @solana/spl-token (instruksi yang dipakai dashboard)
 │   │   ├── metaplex.js       # Metaplex Token Metadata: CreateMetadataAccountV3, CreateV1 (Token-2022), UpdateV2, baca metadata
@@ -55,6 +57,7 @@ sollaunchpad-lite/
     ├── build-vendor.js       # Rebuild file vendor (esbuild) — opsional
     ├── raydium-entry.js, buffer-shim.js
     ├── verify-spl-token.js   # Uji: spl-token.js identik dengan @solana/spl-token
+    ├── tests/                # Unit/integration test Node bawaan (npm test; tanpa dependency tambahan)
     ├── e2e.js                # Uji UI headless (Playwright) dengan wallet simulasi, transaksi dicegat
     └── e2e-localnet.js       # Uji end-to-end NYATA: transaksi dikirim & diverifikasi di solana-test-validator
 ```
@@ -69,13 +72,13 @@ sollaunchpad-lite/
 | **Jupiter Swap** | `GET QUOTE` → `EXECUTE SWAP` via Jupiter Swap API |
 | **Liquidity CPMM** | Raydium CPMM — Create Pool (likuiditas awal dari AMOUNT A/B + PRICE A), Add Liquidity, Remove Liquidity (dengan MIN A/MIN B) |
 | **Liquidity CLMM** | Raydium CLMM — Create Pool dengan rentang harga & fee tier (+ posisi awal bila AMOUNT diisi), Add Liquidity (buka posisi pada rentang harga form) |
-| **Token-2022 Fee** | Token-2022 dengan transfer fee (basis points, max fee, recipient = withdraw-withheld authority) + metadata Metaplex |
+| **Token-2022 Fee** | Token-2022 dengan transfer fee (basis points, max fee, recipient = withdraw-withheld authority) + metadata Metaplex; fee configuration immutable secara default, atau dapat diubah creator bila dipilih eksplisit |
 | **Klaim Fee (baru)** | Kartu **KLAIM FEE TERTAHAN** di tab Token-2022: `CEK FEE` memindai semua akun token (fee bps, authority, total tertahan), `CLAIM FEE` menarik semuanya ke wallet FEE RECIPIENT (maks. 20 akun per transaksi, termasuk fee yang sudah di-harvest ke mint) |
 | **Pakai token ini di… (baru)** | Setiap kotak hasil (Create/Clone/Token-2022) dan baris Token List punya tombol `→ POOL CPMM`, `→ POOL CLMM`, `→ REVOKE AUTHORITY` (+ `→ KLAIM FEE` untuk Token-2022) yang mengisi form tujuan otomatis (mint, decimals, pasangan WSOL) dan pindah tab |
 | **Revoke Authority** | Cabut Mint Authority / Freeze Authority / **Metadata Update Authority** (metadata menjadi immutable) |
 | **Token List** | Daftar token tersimpan di `localStorage` (`token-creator-tokens`) + `[WIPE ALL]` |
 | **Tombol Pintasan DEX** | DexScreener, Birdeye, Raydium Swap, Jupiter Swap, Solana Explorer |
-| **Wallet** | Phantom & Solflare (non-custodial), error handling |
+| **Wallet** | Phantom & Solflare (non-custodial), error handling, saldo SOL network terpilih (refresh otomatis / tombol refresh) |
 | **Network Toggle** | DEVNET / MAINNET (tombol header + toggle melayang kanan-atas, keduanya dari kode asli) |
 
 ## Alur penggunaan (roadmap)
@@ -95,15 +98,21 @@ LIQUIDITY CPMM / CLMM  ◄── tombol "→ POOL CPMM / → POOL CLMM" di setia
   harus ditentukan saat mint dibuat.
 - Pajak juga dipotong ketika token masuk pool (add liquidity, swap), sehingga rasio pool bergeser sedikit.
 - Fee tidak langsung masuk wallet: fee *tertahan* di akun penerima dan ditarik lewat `CLAIM FEE` oleh FEE RECIPIENT.
+- Supply SPL/Token-2022, jumlah swap, dan input likuiditas memakai konversi desimal eksak (`BigInt`); nilai dengan digit nonzero di luar decimals token atau di atas batas u64 ditolak. Untuk CPMM, hanya jumlah pasangan yang dihitung otomatis dari harga yang dibulatkan turun ke unit terkecil.
+- Status wallet menampilkan native SOL pada network terpilih, melakukan polling tiap 30 detik, dan menyediakan tombol refresh manual. Jika RPC tidak dapat diakses, saldo ditandai `UNAVAILABLE` (bukan dianggap nol).
 
 ## Konfigurasi
 
-- **RPC**: edit `public/js/config.js`, atau buat `.env` dari `.env.example` — `server.js` akan
-  menyuntikkan `RPC_DEVNET` / `RPC_MAINNET` ke `config.js` saat disajikan.
-- **Jupiter API**: `JUPITER_API` di `config.js`. Default `https://lite-api.jup.ag/swap/v1`
-  (tanpa API key). Endpoint lama `quote-api.jup.ag/v6` yang dipakai kode asli **sudah dimatikan
-  Jupiter per 1 Oktober 2025**; skema `quote`/`swap` di v1 identik sehingga alurnya tidak berubah.
-  Jika punya API key, ganti ke `https://api.jup.ag/swap/v1` dan tambahkan header `x-api-key`.
+- **RPC**: salin `.env.example` menjadi `.env`, lalu atur `RPC_DEVNET` / `RPC_MAINNET`; `server.js`
+  menyuntikkan URL yang dipilih ke `config.js`. Untuk hosting statis, edit `public/js/config.js` langsung.
+  Jika RPC mengembalikan HTTP 403, periksa jaringan yang dipilih, akses/API key/origin allowlist provider, dan batas pemakaian.
+  Respons 403 berarti provider menolak request (berbeda dari mint yang tidak ditemukan). URL RPC di browser dapat dilihat pengunjung;
+  gunakan key dengan pembatasan origin/referrer atau proxy RPC yang benar-benar berada di server.
+- **Jupiter API**: `JUPITER_API` di `config.js`. Default `https://lite-api.jup.ag/swap/v1` (tanpa API key).
+  Jupiter Swap dibatasi ke **mainnet-beta**; tombol quote tidak aktif di devnet. Jika memakai endpoint ber-key,
+  set `JUPITER_API` ke `https://api.jup.ag/swap/v1` dan isi `JUPITER_API_KEY` di `config.js` atau `.env`.
+  Key itu juga dikirim ke browser, jadi gunakan key yang dibatasi origin. Endpoint lama `quote-api.jup.ag/v6`
+  sudah dimatikan; aplikasi memakai endpoint Swap API v1.
 
 ## Memperbarui file vendor (opsional)
 
@@ -117,6 +126,7 @@ npm run verify         # pastikan spl-token.js masih identik dengan @solana/spl-
 
 ## Pengujian
 
+- `npm test` — tes unit/integrasi Node bawaan (konversi token eksak, config injection, path traversal, HTTP method, dan error URL), tanpa Playwright atau akses RPC.
 - `npm run verify` — membandingkan byte instruksi `spl-token.js` dengan library resmi
   (InitializeMint, CreateATA, MintTo, SetAuthority, InitializeTransferFeeConfig, ATA, getMintLen, unpackMint).
 - `node scripts/e2e.js` (butuh `npm i -D playwright && npx playwright install chromium`, server harus jalan) —
@@ -193,6 +203,7 @@ Yang sengaja **dipertahankan apa adanya** (sama persis dengan asli):
 - **Non-custodial:** private key & dana user tidak pernah disimpan di server/web
 - Semua transaksi ditandatangani melalui wallet (Phantom/Solflare) dan dikirim ke RPC jaringan yang dipilih
 - Tidak ada hardcoded private key di frontend
+- RPC/Jupiter API keys yang diatur melalui config server disajikan ke browser; key tersebut bukan rahasia dan harus dibatasi berdasarkan origin
 - Devnet & Mainnet terpisah untuk mencegah kesalahan jaringan
 
 ## Peringatan
