@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Token Creator</title>
+  <meta name="description" content="Simple SPL Token Creator for Solana Devnet & Mainnet" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- Toggle jaringan melayang (dari WalletProvider.tsx) -->
+  <div class="floating-network" id="floating-network">
+    <button type="button" class="fn-btn" data-network="devnet">Devnet</button>
+    <button type="button" class="fn-btn" data-network="mainnet-beta">Mainnet</button>
+  </div>
+
+  <div class="page">
+    <div class="container">
+
+      <!-- HEADER -->
+      <header class="header">
+        <div class="brand">
+          <div class="logo"><span>SL</span></div>
+          <div>
+            <h1 class="title">SOL<span>LAUNCHPAD</span></h1>
+            <p class="subtitle mono">SOLANA SPL • <span id="hdr-cluster">DEVNET</span> • NON-CUSTODIAL</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <!-- ConnectButton -->
+          <div class="connect-wrap" id="connect-wrap"></div>
+          <button type="button" class="net-btn" id="btn-devnet" data-network="devnet">DEVNET</button>
+          <button type="button" class="net-btn" id="btn-mainnet" data-network="mainnet-beta">MAINNET</button>
+        </div>
+      </header>
+
+      <!-- NAV TABS -->
+      <nav class="tabs" id="tabs">
+        <button type="button" class="tab" data-tab="create" data-color="cyan">CREATE TOKEN</button>
+        <button type="button" class="tab" data-tab="clone" data-color="purple">CLONE TOKEN</button>
+        <button type="button" class="tab" data-tab="swap" data-color="magenta">JUPITER SWAP</button>
+        <button type="button" class="tab" data-tab="liquidity" data-color="green">LIQUIDITY CPMM</button>
+        <button type="button" class="tab" data-tab="clmm" data-color="orange">LIQUIDITY CLMM</button>
+        <button type="button" class="tab" data-tab="token2022" data-color="pink">TOKEN-2022 FEE</button>
+        <button type="button" class="tab" data-tab="authority" data-color="red">REVOKE AUTHORITY</button>
+        <button type="button" class="tab" data-tab="list" data-color="gray">TOKEN LIST</button>
+      </nav>
+
+      <!-- QUICK DEX LINKS -->
+      <div class="panel quick">
+        <p class="mono quick-label">QUICK ACCESS</p>
+        <div class="chips">
+          <a href="https://dexscreener.com/solana" target="_blank" rel="noopener noreferrer" class="chip c-blue">DEXSCREENER</a>
+          <a href="https://birdeye.so" target="_blank" rel="noopener noreferrer" class="chip c-orange">BIRDEYE</a>
+          <a href="https://raydium.io/swap/" target="_blank" rel="noopener noreferrer" class="chip c-green">RAYDIUM</a>
+          <a href="https://jup.ag/swap" target="_blank" rel="noopener noreferrer" class="chip c-pink">JUPITER</a>
+          <a href="https://explorer.solana.com?cluster=devnet" target="_blank" rel="noopener noreferrer" class="chip c-cyan" id="quick-explorer">EXPLORER</a>
+        </div>
+      </div>
+
+      <!-- WALLET STATUS BAR -->
+      <div class="panel status-bar">
+        <div class="status-left">
+          <div class="dot pulse"></div>
+          <span class="mono status-addr" id="status-addr">DISCONNECTED</span>
+        </div>
+        <div class="mono status-net" id="status-net">DEVNET — TEST TOKENS ONLY</div>
+      </div>
+
+      <!-- ==================== CREATE TOKEN ==================== -->
+      <section class="section" data-panel="create">
+        <div class="card c-cyan">
+          <h2 class="card-title"><span>▶</span> CREATE SPL TOKEN</h2>
+          <div class="alert alert-green mono net-info-devnet">
+            ℹ Devnet: gratis untuk belajar. Ambil devnet SOL di
+            <a href="https://faucet.solana.com/" target="_blank" rel="noopener noreferrer" class="link-cyan">faucet.solana.com</a>
+          </div>
+          <div class="alert alert-red mono net-info-mainnet">⚠ Mainnet: biaya SOL asli (rent + gas).</div>
+
+          <form id="form-create" class="grid grid-4" autocomplete="off">
+            <div class="col-2">
+              <label class="label mono">NAMA TOKEN</label>
+              <input class="input" name="name" value="Neon Token" placeholder="Neon Community" />
+            </div>
+            <div>
+              <label class="label mono">SYMBOL</label>
+              <input class="input mono" name="symbol" value="NEON" placeholder="NEON" maxlength="10" />
+            </div>
+            <div>
+              <label class="label mono">DECIMALS</label>
+              <input class="input mono" type="number" name="decimals" value="9" placeholder="9" />
+            </div>
+            <div class="col-2">
+              <label class="label mono">INITIAL SUPPLY</label>
+              <input class="input mono" type="number" name="initialSupply" value="1000" placeholder="1000" />
+              <p class="hint mono">Satuan standar (bukan lamports)</p>
+            </div>
+            <div class="col-2">
+              <label class="label mono">METADATA URI (opsional)</label>
+              <input class="input mono" name="metadataUri" value="" placeholder="https://ipfs.io/ipfs/..." />
+              <p class="hint mono">Nama, symbol &amp; URI disimpan on-chain sebagai metadata Metaplex (maks. 200 byte)</p>
+            </div>
+            <div class="col-2 flex-end">
+              <button type="submit" class="btn btn-block btn-cyan glow-cyan" id="btn-create">LAUNCH DEVNET</button>
+            </div>
+            <div class="col-2 hint mono need-wallet">Konektasikan wallet terlebih dahulu.</div>
+          </form>
+
+          <div id="create-result"></div>
+          <div id="create-error"></div>
+        </div>
+      </section>
+
+      <!-- ==================== CLONE TOKEN ==================== -->
+      <section class="section" data-panel="clone">
+        <div class="card c-purple">
+          <h2 class="card-title"><span>🧬</span> CLONE TOKEN</h2>
+          <p class="desc mono">
+            Masukkan alamat MINT token yang ingin dicloning. Sistem akan mengambil decimals &amp; supply dari sumber,
+            lalu membuat token baru dengan parameter yang sama (atau yang diubah).
+          </p>
+
+          <div class="mb-6">
+            <div class="row mb-3">
+              <input class="input mono flex-1" id="clone-input" placeholder="Paste mint address source..." />
+              <button type="button" class="btn btn-purple" id="btn-clone-fetch" disabled>AMBIL DATA</button>
+            </div>
+            <div id="clone-error-top"></div>
+          </div>
+
+          <div id="clone-data"></div>
+
+          <form id="form-clone" class="grid grid-4" autocomplete="off">
+            <div class="col-2">
+              <label class="label mono">NAMA TOKEN (Clone)</label>
+              <input class="input" name="name" value="" placeholder="Neon Clone" />
+            </div>
+            <div>
+              <label class="label mono">SYMBOL</label>
+              <input class="input mono" name="symbol" value="" placeholder="NEON2" maxlength="10" />
+            </div>
+            <div>
+              <label class="label mono">DECIMALS</label>
+              <input class="input mono" type="number" name="decimals" value="9" placeholder="9" />
+            </div>
+            <div class="col-2">
+              <label class="label mono">INITIAL SUPPLY</label>
+              <input class="input mono" type="number" name="initialSupply" value="1000" placeholder="1000" />
+            </div>
+            <div class="col-2 flex-end">
+              <button type="submit" class="btn btn-block btn-purple glow-purple" id="btn-clone">CLONE DEVNET</button>
+            </div>
+            <div class="col-2 hint mono need-wallet">Konektasikan wallet terlebih dahulu.</div>
+          </form>
+
+          <div id="clone-result"></div>
+          <div id="clone-error"></div>
+        </div>
+      </section>
+
+      <!-- ==================== SWAP (JUPITER) ==================== -->
+      <section class="section" data-panel="swap">
+        <div class="card c-magenta">
+          <h2 class="card-title"><span>⇄</span> JUPITER SWAP</h2>
+          <p class="desc mono">Swap token via Jupiter Aggregator API. Hanya bayar gas fee.</p>
+
+          <form id="form-swap" class="grid grid-4 items-end" autocomplete="off">
+            <div class="col-2">
+              <label class="label mono">INPUT MINT</label>
+              <input class="input mono" name="inputMint" value="So11111111111111111111111111111111111111112" placeholder="So11111111111111111111111111111111111111112" />
+              <p class="hint hint-dim mono">SOL = So11111111111111111111111111111111111111112</p>
+            </div>
+            <div>
+              <label class="label mono">OUTPUT MINT</label>
+              <input class="input mono" name="outputMint" value="" placeholder="Token mint address" />
+            </div>
+            <div>
+              <label class="label mono">AMOUNT (SOL)</label>
+              <input class="input mono" type="number" step="0.000000001" name="amount" value="0.1" placeholder="0.1" />
+            </div>
+            <div>
+              <label class="label mono">SLIPPAGE (bps)</label>
+              <input class="input mono" type="number" name="slippage" value="50" placeholder="50" />
+              <p class="hint hint-dim mono">50 = 0.5%</p>
+            </div>
+            <div class="col-2">
+              <button type="button" class="btn btn-block btn-magenta glow-magenta" id="btn-quote">GET QUOTE</button>
+            </div>
+            <div class="col-2">
+              <button type="button" class="btn btn-block btn-green glow-green" id="btn-swap" disabled>EXECUTE SWAP</button>
+            </div>
+          </form>
+
+          <div id="swap-quote"></div>
+          <div id="swap-result"></div>
+          <div id="swap-error"></div>
+        </div>
+      </section>
+
+      <!-- ==================== LIQUIDITY CPMM ==================== -->
+      <section class="section" data-panel="liquidity">
+        <div class="card c-green">
+          <h2 class="card-title"><span>💧</span> LIQUIDITY MANAGER — RAYDIUM CPMM</h2>
+          <p class="desc mono">
+            CPMM = Constant Product Market Maker. AMM termurah di Solana (biaya pool rendah).
+            <br />
+            <span class="warn-text">⚠ Eksekusi on-chain menggunakan @raydium-io/raydium-sdk-v2. Semua transaksi ditandatangani via wallet Anda.</span>
+          </p>
+
+          <div class="alert alert-green mono net-info-devnet">ℹ Devnet: liqudity pool uji coba, token tidak bernilai.</div>
+          <div class="alert alert-red mono net-info-mainnet">⚠ Mainnet: biaya SOL asli + risiko impermanent loss.</div>
+
+          <div class="alert alert-yellow mono mb-4" id="liq-prefill-note" hidden></div>
+          <div class="grid grid-3 mb-4">
+            <div>
+              <label class="label mono">MINT A</label>
+              <input class="input mono" id="liq-mintA" placeholder="Token A mint" />
+            </div>
+            <div>
+              <label class="label mono">MINT B</label>
+              <input class="input mono" id="liq-mintB" placeholder="Token B mint" />
+            </div>
+            <div>
+              <label class="label mono">PRICE A (vs B)</label>
+              <input class="input mono" type="number" step="0.000001" id="liq-priceA" placeholder="1" />
+            </div>
+          </div>
+
+          <div class="grid grid-4 mb-4">
+            <div>
+              <label class="label mono">AMOUNT A</label>
+              <input class="input mono" type="number" id="liq-amountA" placeholder="10" />
+            </div>
+            <div>
+              <label class="label mono">AMOUNT B</label>
+              <input class="input mono" type="number" id="liq-amountB" placeholder="10" />
+            </div>
+            <div class="col-2">
+              <label class="label mono">POOL ID (untuk Add/Remove)</label>
+              <input class="input mono" id="liq-poolId" placeholder="Pool address..." />
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label class="label mono">WITHDRAW PARAMS</label>
+            <div class="grid grid-4 gap-2">
+              <div>
+                <label class="label-xs mono">LIQUIDITY (LP)</label>
+                <input class="input input-sm mono" type="number" id="liq-liquidity" placeholder="LP amount" />
+              </div>
+              <div>
+                <label class="label-xs mono">MIN A</label>
+                <input class="input input-sm mono" type="number" id="liq-minA" placeholder="0" />
+              </div>
+              <div>
+                <label class="label-xs mono">MIN B</label>
+                <input class="input input-sm mono" type="number" id="liq-minB" placeholder="0" />
+              </div>
+            </div>
+          </div>
+
+          <div class="row">
+            <button type="button" class="btn flex-1 btn-green glow-green" id="btn-liq-create" disabled>CREATE POOL</button>
+            <button type="button" class="btn flex-1 btn-cyan" id="btn-liq-deposit" disabled>ADD LIQUIDITY</button>
+            <button type="button" class="btn flex-1 btn-red" id="btn-liq-withdraw" disabled>REMOVE LIQUIDITY</button>
+          </div>
+          <p class="hint mono sdk-status" id="liq-sdk-status"></p>
+
+          <div id="liq-result"></div>
+          <div id="liq-error"></div>
+        </div>
+      </section>
+
+      <!-- ==================== LIQUIDITY CLMM ==================== -->
+      <section class="section" data-panel="clmm">
+        <div class="card c-orange">
+          <h2 class="card-title"><span>📊</span> LIQUIDITY CLMM — CONCENTRATED LIQUIDITY</h2>
+          <p class="desc mono">
+            CLMM memungkinkan likuiditas dikonsentrasi dalam rentang harga (tick range) untuk leverage virtual.
+            Semakin sempit rentang, semakin tinggi efisiensi modal — namun risiko out-of-range juga lebih besar.
+            <br />
+            <span class="warn-text">⚠ Semua transaksi ditandatangani via wallet Anda. Mainnet: biaya SOL asli.</span>
+          </p>
+
+          <div class="alert alert-yellow mono mb-4" id="clmm-prefill-note" hidden></div>
+          <div class="grid grid-3 mb-4">
+            <div>
+              <label class="label mono">MINT A (Token Baru)</label>
+              <input class="input mono" id="clmm-mintA" placeholder="Token A mint" />
+            </div>
+            <div>
+              <label class="label mono">MINT B (Quotasi, default WSOL)</label>
+              <input class="input mono" id="clmm-mintB" value="So11111111111111111111111111111111111111112" placeholder="So11111111111111111111111111111111111111112" />
+            </div>
+            <div>
+              <label class="label mono">DECIMALS A</label>
+              <input class="input mono" type="number" id="clmm-decimalsA" value="9" placeholder="9" />
+            </div>
+            <div>
+              <label class="label mono">DECIMALS B</label>
+              <input class="input mono" type="number" id="clmm-decimalsB" value="9" placeholder="9" />
+            </div>
+          </div>
+
+          <div class="grid grid-4 mb-4">
+            <div>
+              <label class="label mono">HARGA AWAL (A vs B)</label>
+              <input class="input mono" type="number" step="0.000000001" id="clmm-initialPrice" value="1" placeholder="1" />
+            </div>
+            <div>
+              <label class="label mono">PRICE LOWER</label>
+              <input class="input mono" type="number" step="0.000000001" id="clmm-priceLower" value="0.8" placeholder="0.8" />
+              <p class="hint mono">Batas bawah rentang</p>
+            </div>
+            <div>
+              <label class="label mono">PRICE UPPER</label>
+              <input class="input mono" type="number" step="0.000000001" id="clmm-priceUpper" value="1.2" placeholder="1.2" />
+              <p class="hint mono">Batas atas rentang</p>
+            </div>
+            <div>
+              <label class="label mono">FEE RATE (bps)</label>
+              <select class="input mono select" id="clmm-feeRate">
+                <option value="10">0.01% — stable pairs (tick spacing 1)</option>
+                <option value="25">0.05% (tick spacing 10)</option>
+                <option value="2500" selected>0.25% — Recommended (tick spacing 60)</option>
+                <option value="10000">1% — volatile (tick spacing 120)</option>
+              </select>
+              <p class="hint mono">Devnet hanya punya 0.01% / 0.05% / 0.25%; pilihan lain memakai config fee terdekat</p>
+            </div>
+          </div>
+
+          <div class="grid grid-3 mb-4">
+            <div>
+              <label class="label mono">AMOUNT A</label>
+              <input class="input mono" type="number" id="clmm-amountA" placeholder="1000" />
+            </div>
+            <div>
+              <label class="label mono">AMOUNT B</label>
+              <input class="input mono" type="number" id="clmm-amountB" placeholder="10" />
+            </div>
+            <div class="col-3">
+              <label class="label mono">POOL ID (untuk Add Liquidity)</label>
+              <input class="input mono" id="clmm-poolId" placeholder="Masukkan pool ID CLMM..." />
+              <p class="hint mono text-green" id="clmm-latest-pool" hidden></p>
+            </div>
+          </div>
+
+          <div class="row">
+            <button type="button" class="btn flex-1 btn-orange glow-orange" id="btn-clmm-create" disabled>CREATE CLMM POOL</button>
+            <button type="button" class="btn flex-1 btn-cyan" id="btn-clmm-deposit" disabled>ADD LIQUIDITY CLMM</button>
+          </div>
+          <p class="hint mono sdk-status" id="clmm-sdk-status"></p>
+
+          <div class="info-box mono">
+            <p class="mb-1">Info Virtual Leverage (CLMM):</p>
+            <ul>
+              <li>Rentang lebih sempit (contoh 0.95–1.05) = likuiditas lebih terkonsentrasi, efisiensi modal lebih tinggi.</li>
+              <li>Rentang lebih lebar (contoh 0.5–2.0) = lebih aman dari out-of-range, namun efisiensi modal lebih rendah.</li>
+              <li>Jika harga keluar rentang, likuiditas Anda akan di-konversi seuhasil satu aset saja dan tidak menghasilkan fee sampai kembali ke rentang.</li>
+            </ul>
+          </div>
+
+          <div id="clmm-result"></div>
+          <div id="clmm-error"></div>
+        </div>
+      </section>
+
+      <!-- ==================== TOKEN-2022 TRANSFER FEE ==================== -->
+      <section class="section" data-panel="token2022">
+        <div class="card c-pink">
+          <h2 class="card-title"><span>💸</span> TOKEN-2022 TRANSFER FEE</h2>
+          <p class="desc mono">
+            Setiap kali token ini ditransfer/diperdagangkan, fee otomatis dikirim ke wallet Anda (creator).
+            Fee dihitung sebagai basis points dari jumlah transfer.
+            <br />
+            <span class="warn-text">⚠ Token-2022 memerlukan program terpisah dari SPL standar. Pastikan wallet mendukung Token-2022.</span>
+          </p>
+
+          <div class="alert alert-green mono net-info-devnet">ℹ Devnet: gratis untuk belajar. Transfer fee tidak bernilai nyata.</div>
+          <div class="alert alert-red mono net-info-mainnet">⚠ Mainnet: biaya SOL asli untuk rent + gas fee pembuatan mint.</div>
+
+          <form id="form-t22" class="grid grid-4" autocomplete="off">
+            <div class="col-2">
+              <label class="label mono">NAMA TOKEN</label>
+              <input class="input" name="name" value="Fee Token" placeholder="My Fee Token" />
+            </div>
+            <div>
+              <label class="label mono">SYMBOL</label>
+              <input class="input mono" name="symbol" value="FEE" placeholder="FEE" maxlength="10" />
+            </div>
+            <div>
+              <label class="label mono">DECIMALS</label>
+              <input class="input mono" type="number" name="decimals" value="9" placeholder="9" />
+            </div>
+            <div class="col-2">
+              <label class="label mono">INITIAL SUPPLY</label>
+              <input class="input mono" type="number" name="initialSupply" value="1000000" placeholder="1000000" />
+            </div>
+            <div>
+              <label class="label mono">FEE BASIS POINTS</label>
+              <input class="input mono" type="number" name="transferFeeBasisPoints" value="100" placeholder="100" />
+              <p class="hint mono">100 = 1% | 1000 = 10% | 10000 = 100%</p>
+            </div>
+            <div>
+              <label class="label mono">MAX FEE (unit terkecil token)</label>
+              <input class="input mono" type="number" name="transferFeeMax" value="1000000" placeholder="1000000" />
+              <p class="hint mono">Batas fee per transfer dalam unit terkecil (10^decimals); 1000000 dengan 9 decimals = 0.001 token. 0 = tanpa cap</p>
+            </div>
+            <div class="col-2">
+              <label class="label mono">FEE RECIPIENT (wallet Anda)</label>
+              <input class="input mono" name="feeRecipient" value="" placeholder="Biarkan kosong = wallet yang connect" />
+              <p class="hint mono">Alamat ini menjadi withdraw-withheld authority: fee tertahan di akun penerima dapat ditarik olehnya</p>
+            </div>
+            <div class="col-2 flex-end">
+              <button type="submit" class="btn btn-block btn-pink glow-pink" id="btn-t22">LAUNCH TOKEN-2022</button>
+            </div>
+            <div class="col-2 hint mono need-wallet">Konektasikan wallet terlebih dahulu.</div>
+          </form>
+
+          <div id="t22-result"></div>
+          <div id="t22-error"></div>
+
+          <!-- Klaim fee tertahan (withdraw withheld) -->
+          <div class="claim-card" id="claim-card">
+            <h3 class="claim-title mono">💰 KLAIM FEE TERTAHAN (FEE RECIPIENT)</h3>
+            <p class="hint mono">
+              Fee transfer Token-2022 tidak langsung masuk wallet: fee <em>tertahan</em> di akun token penerima
+              (dan/atau di akun mint). Hanya withdraw-withheld authority — alamat FEE RECIPIENT saat token dibuat —
+              yang bisa menariknya. Klaim akan memindahkan semua fee tertahan ke akun token wallet Anda.
+            </p>
+            <div class="grid grid-4">
+              <div class="col-3">
+                <label class="label mono">MINT TOKEN-2022</label>
+                <input class="input mono" id="claim-mint" placeholder="Mint Token-2022 dengan transfer fee" />
+              </div>
+              <div class="flex-end">
+                <button type="button" class="btn btn-block btn-cyan" id="btn-claim-check">CEK FEE</button>
+              </div>
+            </div>
+            <div id="claim-info"></div>
+            <button type="button" class="btn btn-block btn-pink glow-pink mt-3" id="btn-claim">CLAIM FEE</button>
+            <div id="claim-result"></div>
+            <div id="claim-error"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== REVOKE AUTHORITY ==================== -->
+      <section class="section" data-panel="authority">
+        <div class="card c-red">
+          <h2 class="card-title"><span>🔒</span> REVOKE AUTHORITY</h2>
+          <p class="desc mono">
+            Cabut otoritas dari token Anda. Setelah dicabut, tidak bisa dikembalikan.
+            <br />
+            <span class="warn-text">⚠ Hanya gunakan jika Anda yakin. Akses tidak bisa dipulihkan.</span>
+          </p>
+
+          <div class="row wrap mb-4" id="auth-type-buttons">
+            <button type="button" class="btn btn-gray auth-type" data-type="mint">Revoke Mint Authority</button>
+            <button type="button" class="btn btn-gray auth-type" data-type="freeze">Revoke Freeze Authority</button>
+            <button type="button" class="btn btn-gray auth-type" data-type="update">Revoke Metadata Update Authority</button>
+          </div>
+
+          <form id="form-auth" class="grid grid-2" autocomplete="off">
+            <div class="col-2">
+              <label class="label mono">MINT ADDRESS</label>
+              <input class="input mono" id="auth-mint" placeholder="Paste mint address..." />
+            </div>
+            <div class="col-2">
+              <label class="label mono">AUTHORITY TYPE</label>
+              <select class="input mono select" id="auth-type">
+                <option value="mint">Mint Authority (stop new token creation)</option>
+                <option value="freeze">Freeze Authority (stop account freezing)</option>
+                <option value="update">Metadata Update Authority (stop metadata changes)</option>
+              </select>
+              <p class="hint mono" id="auth-type-desc">Mint authority: Can create new tokens. Revoking makes supply fixed.</p>
+            </div>
+            <div class="col-2 flex-end">
+              <button type="submit" class="btn btn-block btn-red glow-red" id="btn-auth">REVOKE MINT</button>
+            </div>
+            <div class="col-2 hint mono need-wallet">Konektasikan wallet terlebih dahulu.</div>
+            <div class="col-2 alert alert-yellow mono" id="auth-update-warn" hidden>
+              ⚠ Mencabut update authority metadata bersifat permanen: nama/symbol/URI token tidak bisa diubah lagi (metadata menjadi immutable).
+            </div>
+          </form>
+
+          <div id="auth-result"></div>
+          <div id="auth-error"></div>
+        </div>
+      </section>
+
+      <!-- ==================== TOKEN LIST ==================== -->
+      <section class="section section-last" data-panel="list">
+        <div class="card c-gray">
+          <div class="list-head">
+            <h2 class="card-title list-title">TOKEN LIST</h2>
+            <button type="button" class="link-btn text-red mono" id="btn-wipe">[WIPE ALL]</button>
+          </div>
+          <div id="token-list"></div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- Vendor: Solana web3.js (IIFE resmi, 1 file) -->
+  <script src="vendor/solana-web3.min.js"></script>
+  <!-- App -->
+  <script src="js/config.js"></script>
+  <script src="js/spl-token.js"></script>
+  <script src="js/wallet.js"></script>
+  <script src="js/metaplex.js"></script>
+  <script src="js/token-2022.js"></script>
+  <script src="js/raydium-cpmm.js"></script>
+  <script src="js/raydium-clmm.js"></script>
+  <script src="js/app.js"></script>
+  <!-- vendor/raydium-sdk.js dimuat lazy oleh app.js saat tab Liquidity dibuka -->
+</body>
+</html>

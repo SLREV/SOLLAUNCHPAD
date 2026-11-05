@@ -1,0 +1,28 @@
+{
+  "name": "sollaunchpad-lite",
+  "version": "1.1.0",
+  "private": true,
+  "description": "SOLLAUNCHPAD — Solana Token Launchpad. Versi ringan: Node.js (tanpa dependensi) + HTML/CSS/Vanilla JS.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build:vendor": "node scripts/build-vendor.js",
+    "verify": "node scripts/verify-spl-token.js",
+    "e2e": "node scripts/e2e.js",
+    "e2e:localnet": "node scripts/e2e-localnet.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@raydium-io/raydium-sdk-v2": "^0.2.81-alpha",
+    "@solana/spl-token": "^0.3.11",
+    "@solana/web3.js": "^1.95.3",
+    "bn.js": "^5.2.1",
+    "buffer": "^6.0.3",
+    "decimal.js": "^10.4.3",
+    "esbuild": "^0.24.0"
+  }
+}
