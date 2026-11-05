@@ -16,6 +16,8 @@ window.APP_CONFIG = {
   // Endpoint lama "https://quote-api.jup.ag/v6" sudah dimatikan Jupiter (1 Okt 2025).
   // Pengganti resmi tanpa API key: lite-api.jup.ag/swap/v1 (skema quote/swap sama persis).
   JUPITER_API: 'https://lite-api.jup.ag/swap/v1',
+  // Optional. This is delivered to the browser; use a key restricted to this site's origin.
+  JUPITER_API_KEY: '',
 
   // Kunci localStorage (sama dengan versi Next.js agar data lama tetap terbaca)
   STORAGE_TOKENS: 'token-creator-tokens',

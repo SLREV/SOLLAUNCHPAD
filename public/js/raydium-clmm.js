@@ -33,14 +33,18 @@
 
   function isPositive(v) {
     if (v === undefined || v === null || v === '') return false;
-    const n = Number(v);
-    return isFinite(n) && n > 0;
+    try {
+      const { Decimal } = sdk();
+      const value = v instanceof Decimal ? v : new Decimal(String(v));
+      return value.isFinite() && value.gt(0);
+    } catch (_) {
+      return false;
+    }
   }
 
   function toRaw(uiAmount, decimals) {
-    const { Decimal, BN } = sdk();
-    const d = uiAmount instanceof Decimal ? uiAmount : new Decimal(String(uiAmount));
-    return new BN(d.mul(new Decimal(10).pow(decimals)).toFixed(0, Decimal.ROUND_DOWN));
+    const { BN } = sdk();
+    return new BN(root.TokenAmounts.toBaseUnits(String(uiAmount), decimals).toString());
   }
 
   function toUi(raw, decimals) {
@@ -377,38 +381,47 @@
       });
       const txId = await executeAndConfirm(this.connection, execute);
 
-      const poolId = String(extInfo.mockPoolInfo.id || extInfo.address.id);
-      const range = this._range(extInfo.mockPoolInfo, mint1.address, params.priceLower, params.priceUpper);
-
+      const poolId = String((extInfo.mockPoolInfo && extInfo.mockPoolInfo.id) || extInfo.address.id);
       const result = {
         poolId,
         signature: txId,
-        tickLower: range.tickLower,
-        tickUpper: range.tickUpper,
-        tickSpacing: range.tickSpacing,
+        tickLower: null,
+        tickUpper: null,
+        tickSpacing: null,
         tradeFeeRate: cfg.tradeFeeRate, // satuan 1e-6
         ammConfigId: String(cfg.id),
         positionSignature: '',
         nftMint: '',
+        positionError: '',
       };
 
-      if (isPositive(params.inputAmountA) || isPositive(params.inputAmountB)) {
-        // Ambil data pool on-chain yang baru dibuat, lalu buka posisi pada rentang harga
-        const data = await this._fetchPool(poolId);
-        const pos = await this.openPosition({
-          poolInfo: data.poolInfo,
-          poolKeys: data.poolKeys,
-          swapped: range.swapped,
-          tickLower: range.tickLower,
-          tickUpper: range.tickUpper,
-          amountA: params.inputAmountA,
-          amountB: params.inputAmountB,
-          slippageBps: params.slippageBps,
-        });
-        result.positionSignature = pos.signature;
-        result.nftMint = pos.nftMint;
-        result.amountA = pos.amountA;
-        result.amountB = pos.amountB;
+      try {
+        const range = this._range(extInfo.mockPoolInfo, mint1.address, params.priceLower, params.priceUpper);
+        result.tickLower = range.tickLower;
+        result.tickUpper = range.tickUpper;
+        result.tickSpacing = range.tickSpacing;
+
+        if (isPositive(params.inputAmountA) || isPositive(params.inputAmountB)) {
+          // Pool sudah final di chain. Jika posisi gagal, kembalikan detail pool agar pengguna dapat melanjutkan,
+          // bukan menyembunyikan transaksi pertama dan mendorong pembuatan ulang pool.
+          const data = await this._fetchPool(poolId);
+          const pos = await this.openPosition({
+            poolInfo: data.poolInfo,
+            poolKeys: data.poolKeys,
+            swapped: range.swapped,
+            tickLower: range.tickLower,
+            tickUpper: range.tickUpper,
+            amountA: params.inputAmountA,
+            amountB: params.inputAmountB,
+            slippageBps: params.slippageBps,
+          });
+          result.positionSignature = pos.signature;
+          result.nftMint = pos.nftMint;
+          result.amountA = pos.amountA;
+          result.amountB = pos.amountB;
+        }
+      } catch (e) {
+        result.positionError = (e && e.message) || 'Initial liquidity position failed';
       }
 
       return result;

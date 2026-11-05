@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="id">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -64,6 +64,8 @@
         <div class="status-left">
           <div class="dot pulse"></div>
           <span class="mono status-addr" id="status-addr">DISCONNECTED</span>
+          <span class="mono status-balance" id="wallet-balance" aria-live="polite">BALANCE —</span>
+          <button type="button" class="balance-refresh mono" id="btn-refresh-balance" title="Refresh wallet balance" aria-label="Refresh wallet balance">↻</button>
         </div>
         <div class="mono status-net" id="status-net">DEVNET — TEST TOKENS ONLY</div>
       </div>
@@ -164,6 +166,7 @@
         <div class="card c-magenta">
           <h2 class="card-title"><span>⇄</span> JUPITER SWAP</h2>
           <p class="desc mono">Swap token via Jupiter Aggregator API. Hanya bayar gas fee.</p>
+          <div class="alert alert-yellow mono" id="swap-network-note">Jupiter Swap transactions are mainnet-beta only. Switch to MAINNET before requesting a quote or signing.</div>
 
           <form id="form-swap" class="grid grid-4 items-end" autocomplete="off">
             <div class="col-2">
@@ -176,7 +179,7 @@
               <input class="input mono" name="outputMint" value="" placeholder="Token mint address" />
             </div>
             <div>
-              <label class="label mono">AMOUNT (SOL)</label>
+              <label class="label mono">INPUT AMOUNT (TOKEN UNITS)</label>
               <input class="input mono" type="number" step="0.000000001" name="amount" value="0.1" placeholder="0.1" />
             </div>
             <div>
@@ -408,6 +411,14 @@
               <p class="hint mono">Batas fee per transfer dalam unit terkecil (10^decimals); 1000000 dengan 9 decimals = 0.001 token. 0 = tanpa cap</p>
             </div>
             <div class="col-2">
+              <label class="label mono">FEE CONFIG AUTHORITY</label>
+              <select class="input mono select" name="feeConfigAuthority">
+                <option value="immutable" selected>None — fee settings immutable</option>
+                <option value="creator">Connected wallet — can change fees later</option>
+              </select>
+              <p class="hint mono">Immutable dipilih secara default. Jika creator dipilih, wallet creator dapat mengubah basis points dan max fee setelah token dibuat.</p>
+            </div>
+            <div class="col-2">
               <label class="label mono">FEE RECIPIENT (wallet Anda)</label>
               <input class="input mono" name="feeRecipient" value="" placeholder="Biarkan kosong = wallet yang connect" />
               <p class="hint mono">Alamat ini menjadi withdraw-withheld authority: fee tertahan di akun penerima dapat ditarik olehnya</p>
@@ -508,6 +519,7 @@
   <script src="vendor/solana-web3.min.js"></script>
   <!-- App -->
   <script src="js/config.js"></script>
+  <script src="js/amounts.js"></script>
   <script src="js/spl-token.js"></script>
   <script src="js/wallet.js"></script>
   <script src="js/metaplex.js"></script>

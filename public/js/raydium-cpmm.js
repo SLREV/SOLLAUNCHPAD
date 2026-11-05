@@ -31,15 +31,27 @@
 
   function isPositive(v) {
     if (v === undefined || v === null || v === '') return false;
-    const n = Number(v);
-    return isFinite(n) && n > 0;
+    try {
+      const { Decimal } = sdk();
+      const value = v instanceof Decimal ? v : new Decimal(String(v));
+      return value.isFinite() && value.gt(0);
+    } catch (_) {
+      return false;
+    }
   }
 
-  /** UI amount (string/number/Decimal) -> BN satuan terkecil */
-  function toRaw(uiAmount, decimals) {
+  /** UI amount -> exact BN base units; only derived counterpart amounts may round down. */
+  function toRaw(uiAmount, decimals, allowRoundDown) {
     const { Decimal, BN } = sdk();
+    if (!allowRoundDown) {
+      const exactText = uiAmount instanceof Decimal ? uiAmount.toFixed() : String(uiAmount);
+      return new BN(root.TokenAmounts.toBaseUnits(exactText, decimals).toString());
+    }
     const d = uiAmount instanceof Decimal ? uiAmount : new Decimal(String(uiAmount));
-    return new BN(d.mul(new Decimal(10).pow(decimals)).toFixed(0, Decimal.ROUND_DOWN));
+    if (!d.isFinite() || d.lt(0)) throw new Error('Amount must be a valid non-negative decimal');
+    const raw = BigInt(d.mul(new Decimal(10).pow(decimals)).toFixed(0, Decimal.ROUND_DOWN));
+    if (raw > root.TokenAmounts.U64_MAX) throw new Error('Amount exceeds the u64 maximum');
+    return new BN(raw.toString());
   }
 
   /** BN satuan terkecil -> string UI */
@@ -196,8 +208,8 @@
       if (!uiB) uiB = uiA.mul(price); // B = A × harga
       if (!uiA) uiA = uiB.div(price); // A = B ÷ harga
 
-      const mintAAmount = toRaw(uiA, mintA.decimals);
-      const mintBAmount = toRaw(uiB, mintB.decimals);
+      const mintAAmount = toRaw(uiA, mintA.decimals, !hasA); // calculated counterpart rounds down to valid base units
+      const mintBAmount = toRaw(uiB, mintB.decimals, !hasB);
       if (mintAAmount.isZero() || mintBAmount.isZero()) throw new Error('Jumlah likuiditas awal terlalu kecil untuk decimals token');
 
       const feeConfigs = await this.getFeeConfigs();

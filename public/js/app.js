@@ -11,6 +11,7 @@
   const SplToken = window.SplToken;
   const Wallet = window.Wallet;
   const Metaplex = window.Metaplex;
+  const Amounts = window.TokenAmounts;
   const { Connection, PublicKey, Transaction, SystemProgram, Keypair, VersionedTransaction } = web3;
 
   /* ==================== CONFIG ==================== */
@@ -18,6 +19,7 @@
   const WRAPPED_SOL = CFG.WRAPPED_SOL;
   const NATIVE_SOL = CFG.NATIVE_SOL;
   const JUPITER_API = CFG.JUPITER_API;
+  const JUPITER_API_KEY = CFG.JUPITER_API_KEY || '';
 
   /* ==================== STATE ==================== */
   const S = {
@@ -34,16 +36,22 @@
 
     connectError: null,
     walletMenuOpen: false,
+    walletBalance: null,
+    walletBalanceLoading: false,
+    walletBalanceError: '',
+    walletBalanceRequest: 0,
 
-    createLoading: false, createResult: null, createError: '',
-    cloneFetching: false, cloneData: null, cloneLoading: false, cloneResult: null, cloneError: '',
-    swapQuoting: false, swapLoading: false, swapQuote: null, swapResult: null, swapError: '',
+    createLoading: false, createResult: null, createError: '', createWarning: '',
+    cloneFetching: false, cloneData: null, cloneLoading: false, cloneResult: null, cloneError: '', cloneWarning: '',
+    swapQuoting: false, swapLoading: false, swapQuote: null, swapQuoteContext: null, swapResult: null, swapError: '',
+    swapInputDecimals: null, swapOutputDecimals: null, swapRequest: 0,
     liqLoading: false, liqResult: null, liqError: '',
     clmmLoading: false, clmmResult: null, clmmError: '',
     t22Loading: false, t22Result: null, t22Error: '',
     claimChecking: false, claimLoading: false, claimScan: null, claimResult: null, claimError: '',
     authorityType: 'mint', authLoading: false, authResult: null, authError: '',
   };
+  let walletBalanceTimer = null;
 
   /* ==================== DOM HELPERS ==================== */
   const $ = (sel, root) => (root || document).querySelector(sel);
@@ -58,11 +66,80 @@
 
   const cluster = () => (S.network === 'mainnet-beta' ? 'mainnet-beta' : 'devnet');
   const isDevnet = () => S.network === 'devnet';
-  const getConnection = () => new Connection(RPC_URLS[S.network], 'confirmed');
+  const getConnection = () => {
+    const rpcUrl = RPC_URLS[S.network];
+    if (!rpcUrl) throw new Error(`No RPC URL configured for ${S.network}`);
+    return new Connection(rpcUrl, 'confirmed');
+  };
   const shortAddr = (pk) => { const a = pk.toString(); return a.slice(0, 4) + '...' + a.slice(-4); };
   const base64ToBytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   const errorBox = (msg, extraCls) => (msg ? `<div class="error-box ${extraCls || ''}">${esc(msg)}</div>` : '');
-  const txLink = (sig) => `https://explorer.solana.com/tx/${sig}?cluster=${cluster()}`;
+  const warningBox = (msg) => (msg ? `<div class="alert alert-yellow mono mt-3">${esc(msg)}</div>` : '');
+  const txLink = (sig, network) => `https://explorer.solana.com/tx/${sig}?cluster=${network || cluster()}`;
+
+  function errorMessage(err, fallback) {
+    const message = String((err && err.message) || fallback || 'Unexpected error');
+    if (/\b403\b|access forbidden|forbidden/i.test(message)) {
+      return 'RPC/API provider returned HTTP 403 (access forbidden). Check the selected network, endpoint URL, API-key permissions, and browser-origin allowlist.';
+    }
+    if (/\b429\b|rate.?limit|too many requests/i.test(message)) {
+      return 'RPC/API rate limit reached. Wait briefly or configure a provider with sufficient quota.';
+    }
+    if (/failed to fetch|networkerror|load failed|fetch failed/i.test(message)) {
+      return 'Network request failed. Check connectivity and the configured RPC/API endpoint.';
+    }
+    return message;
+  }
+
+  function jupiterHeaders(json) {
+    const headers = {};
+    if (json) headers['Content-Type'] = 'application/json';
+    if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
+    return headers;
+  }
+
+  function parseIntegerField(value, label, min, max) {
+    const text = String(value == null ? '' : value).trim();
+    if (!/^\d+$/.test(text)) throw new Error(`${label} must be a whole number`);
+    const number = Number(text);
+    if (!Number.isSafeInteger(number) || number < min || number > max) {
+      throw new Error(`${label} must be from ${min} to ${max}`);
+    }
+    return number;
+  }
+
+  async function getMintDecimals(connection, address) {
+    const mint = new PublicKey(address);
+    const info = await connection.getAccountInfo(mint, 'confirmed');
+    if (!info) throw new Error(`Mint ${mint.toBase58()} was not found on ${cluster()}`);
+    if (!info.owner.equals(SplToken.TOKEN_PROGRAM_ID) && !info.owner.equals(SplToken.TOKEN_2022_PROGRAM_ID)) {
+      throw new Error(`Account ${mint.toBase58()} is not an SPL Token or Token-2022 mint`);
+    }
+    return SplToken.unpackMint(mint, info).decimals;
+  }
+
+  async function responseError(res, action) {
+    let detail = '';
+    try {
+      const body = await res.clone().json();
+      detail = body.error || body.message || body.errorMessage || '';
+    } catch (_) {
+      try { detail = (await res.clone().text()).slice(0, 240); } catch (_) { /* ignore */ }
+    }
+    return `${action} failed (HTTP ${res.status})${detail ? `: ${detail}` : ''}`;
+  }
+
+  function clearSwapQuote() {
+    S.swapRequest += 1;
+    S.swapQuoting = false;
+    S.swapQuote = null;
+    S.swapQuoteContext = null;
+    S.swapInputDecimals = null;
+    S.swapOutputDecimals = null;
+    S.swapResult = null;
+    S.swapError = '';
+    renderSwap();
+  }
 
   async function confirmTx(connection, signature, blockhash, lastValidBlockHeight) {
     if (blockhash && lastValidBlockHeight) {
@@ -73,15 +150,29 @@
 
   /* ==================== TOKEN LIST STORAGE ==================== */
   function loadTokens() {
-    const saved = localStorage.getItem(CFG.STORAGE_TOKENS);
-    if (saved) {
-      try { S.tokens = JSON.parse(saved); } catch (_) { /* ignore */ }
+    try {
+      const saved = localStorage.getItem(CFG.STORAGE_TOKENS);
+      if (!saved) return;
+      const parsed = JSON.parse(saved);
+      S.tokens = Array.isArray(parsed)
+        ? parsed.filter((token) => token && typeof token === 'object' && typeof token.mint === 'string')
+        : [];
+    } catch (_) {
+      // Storage can be disabled/corrupt in private browsing or after a manual edit.
+      S.tokens = [];
     }
   }
   function saveTokens(next) {
     S.tokens = next;
-    localStorage.setItem(CFG.STORAGE_TOKENS, JSON.stringify(next));
+    let warning = '';
+    try {
+      localStorage.setItem(CFG.STORAGE_TOKENS, JSON.stringify(next));
+    } catch (err) {
+      warning = 'Token berhasil dibuat on-chain, tetapi browser tidak dapat menyimpan Token List. Simpan alamat mint dan signature di atas.';
+      console.warn('Token List persistence failed:', err);
+    }
     renderList();
+    return warning;
   }
 
   /* ==================== COPY HELPER ==================== */
@@ -238,6 +329,7 @@
 
     const signature = await Wallet.sendTransaction(tx, connection);
     await confirmTx(connection, signature, blockhash, lastValidBlockHeight);
+    refreshWalletBalance(true);
     return { mint: mint.toString(), signature, metadata: !!hasMeta };
   }
 
@@ -246,6 +338,7 @@
     e.preventDefault();
     S.createLoading = true;
     S.createError = '';
+    S.createWarning = '';
     S.createResult = null;
     renderCreate();
     try {
@@ -253,11 +346,10 @@
       if (!publicKey) throw new Error('Wallet not connected');
       const connection = getConnection();
       const f = formValues('form-create');
-      const decimals = parseInt(f.decimals, 10);
-      if (isNaN(decimals) || decimals < 0 || decimals > 18) throw new Error('Invalid decimals');
-      const supply = parseFloat(f.initialSupply);
-      if (isNaN(supply) || supply <= 0) throw new Error('Invalid supply');
-      const amount = Math.floor(supply * Math.pow(10, decimals));
+      const decimals = parseIntegerField(f.decimals, 'Decimals', 0, 18);
+      const supply = String(f.initialSupply || '').trim();
+      const amount = Amounts.toBaseUnits(supply, decimals);
+      if (amount <= 0n) throw new Error('Initial supply must be greater than zero');
 
       Metaplex.validateData({ name: f.name, symbol: f.symbol, uri: f.metadataUri });
       const { mint, signature } = await createSplToken(connection, publicKey, decimals, amount, {
@@ -275,10 +367,10 @@
         signature,
         createdAt: new Date().toISOString(),
       };
-      saveTokens([record, ...S.tokens]);
       S.createResult = { mint, signature, decimals };
+      S.createWarning = saveTokens([record, ...S.tokens]);
     } catch (err) {
-      S.createError = (err && err.message) || 'Create failed';
+      S.createError = errorMessage(err, 'Create failed');
       console.error(err);
     } finally {
       S.createLoading = false;
@@ -287,7 +379,7 @@
   }
 
   function renderCreate() {
-    setHTML('create-result', S.createResult ? tokenResultBox('TOKEN BERHASIL DIBUAT', 'MINT', S.createResult) : '');
+    setHTML('create-result', S.createResult ? tokenResultBox('TOKEN BERHASIL DIBUAT', 'MINT', S.createResult) + warningBox(S.createWarning) : '');
     setHTML('create-error', errorBox(S.createError));
     renderButtons();
   }
@@ -304,15 +396,19 @@
       const mintPubkey = new PublicKey(cloneInput);
       // Dukung SPL Token & Token-2022 (program pemilik akun mint)
       const acc = await connection.getAccountInfo(mintPubkey);
-      if (!acc) throw new Error('Mint not found');
+      if (!acc) throw new Error(`Mint ${mintPubkey.toBase58()} was not found on ${cluster()}; verify the selected network`);
+      if (!acc.owner.equals(SplToken.TOKEN_2022_PROGRAM_ID) && !acc.owner.equals(SplToken.TOKEN_PROGRAM_ID)) {
+        throw new Error('The selected account is not owned by an SPL Token program');
+      }
       const programId = acc.owner.equals(SplToken.TOKEN_2022_PROGRAM_ID) ? SplToken.TOKEN_2022_PROGRAM_ID : SplToken.TOKEN_PROGRAM_ID;
       const mintInfo = await SplToken.getMint(connection, mintPubkey, 'confirmed', programId);
-      const supply = Number(mintInfo.supply) / Math.pow(10, mintInfo.decimals);
+      const supply = Amounts.formatUnits(mintInfo.supply, mintInfo.decimals);
       // Metadata Metaplex sumber (nama, symbol, URI) — jika ada
       let meta = null;
       try {
         meta = await Metaplex.getMetadata(connection, mintPubkey);
-      } catch (_) {
+      } catch (err) {
+        if (/\b403\b|\b429\b|access forbidden|failed to fetch|networkerror/i.test(String(err && err.message))) throw err;
         meta = null;
       }
       const name = meta && meta.name ? meta.name : 'Cloned Token';
@@ -333,7 +429,7 @@
         initialSupply: String(supply),
       });
     } catch (err) {
-      S.cloneError = (err && err.message) || 'Failed to fetch source token';
+      S.cloneError = errorMessage(err, 'Failed to fetch source token');
       console.error(err);
     } finally {
       S.cloneFetching = false;
@@ -363,6 +459,7 @@
     e.preventDefault();
     S.cloneLoading = true;
     S.cloneError = '';
+    S.cloneWarning = '';
     S.cloneResult = null;
     renderClone();
     try {
@@ -370,11 +467,10 @@
       if (!publicKey) throw new Error('Wallet not connected');
       const connection = getConnection();
       const f = formValues('form-clone');
-      const decimals = parseInt(f.decimals, 10);
-      if (isNaN(decimals) || decimals < 0 || decimals > 18) throw new Error('Invalid decimals');
-      const supply = parseFloat(f.initialSupply);
-      if (isNaN(supply) || supply <= 0) throw new Error('Invalid supply');
-      const amount = Math.floor(supply * Math.pow(10, decimals));
+      const decimals = parseIntegerField(f.decimals, 'Decimals', 0, 18);
+      const supply = String(f.initialSupply || '').trim();
+      const amount = Amounts.toBaseUnits(supply, decimals);
+      if (amount <= 0n) throw new Error('Initial supply must be greater than zero');
 
       const sourceUri = S.cloneData && S.cloneData.uri ? S.cloneData.uri : '';
       Metaplex.validateData({ name: f.name, symbol: f.symbol, uri: sourceUri });
@@ -393,10 +489,10 @@
         signature,
         createdAt: new Date().toISOString(),
       };
-      saveTokens([record, ...S.tokens]);
       S.cloneResult = { mint, signature, decimals };
+      S.cloneWarning = saveTokens([record, ...S.tokens]);
     } catch (err) {
-      S.cloneError = (err && err.message) || 'Clone failed';
+      S.cloneError = errorMessage(err, 'Clone failed');
       console.error(err);
     } finally {
       S.cloneLoading = false;
@@ -425,65 +521,155 @@
           </div>`
         : ''
     );
-    setHTML('clone-result', S.cloneResult ? tokenResultBox('CLONE BERHASIL DIBUAT', 'MINT BARU', S.cloneResult) : '');
+    setHTML('clone-result', S.cloneResult ? tokenResultBox('CLONE BERHASIL DIBUAT', 'MINT BARU', S.cloneResult) + warningBox(S.cloneWarning) : '');
     renderButtons();
   }
 
   /* ==================== SWAP (JUPITER) ==================== */
   async function fetchQuote() {
+    if (S.swapQuoting || S.swapLoading) return;
+    const requestId = ++S.swapRequest;
+    S.swapQuote = null;
+    S.swapQuoteContext = null;
+    S.swapInputDecimals = null;
+    S.swapOutputDecimals = null;
+    S.swapResult = null;
     S.swapError = '';
     S.swapQuoting = true;
     renderSwap();
     try {
+      if (S.network !== 'mainnet-beta') throw new Error('Jupiter Swap currently supports mainnet-beta only. Switch to MAINNET and request a fresh quote.');
       const f = formValues('form-swap');
-      const inputMint = f.inputMint === NATIVE_SOL ? WRAPPED_SOL : f.inputMint;
-      const amountLamports = Math.floor(parseFloat(f.amount) * Math.pow(10, 9));
-      const url = `${JUPITER_API}/quote?inputMint=${inputMint}&outputMint=${f.outputMint}&amount=${amountLamports}&slippageBps=${f.slippage}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('Quote failed');
-      S.swapQuote = await res.json();
+      const inputMint = String(f.inputMint || '').trim() === NATIVE_SOL ? WRAPPED_SOL : String(f.inputMint || '').trim();
+      const outputMint = String(f.outputMint || '').trim();
+      if (!inputMint || !outputMint) throw new Error('Input mint and output mint are required');
+      if (inputMint === outputMint) throw new Error('Input and output mints must be different');
+      const slippageBps = parseIntegerField(f.slippage, 'Slippage (bps)', 0, 10000);
+      const connection = getConnection();
+      const [inputDecimals, outputDecimals] = await Promise.all([
+        getMintDecimals(connection, inputMint),
+        getMintDecimals(connection, outputMint),
+      ]);
+      const amount = Amounts.toBaseUnits(f.amount, inputDecimals);
+      if (amount <= 0n) throw new Error('Swap amount must be greater than zero');
+      if (requestId !== S.swapRequest) return;
+
+      const context = {
+        network: S.network,
+        inputMint,
+        outputMint,
+        amount: String(f.amount).trim(),
+        slippageBps: String(slippageBps),
+        inputDecimals,
+        outputDecimals,
+      };
+      const url = new URL(`${JUPITER_API.replace(/\/$/, '')}/quote`);
+      url.searchParams.set('inputMint', inputMint);
+      url.searchParams.set('outputMint', outputMint);
+      url.searchParams.set('amount', amount.toString());
+      url.searchParams.set('slippageBps', String(slippageBps));
+      const res = await fetch(url.toString(), { headers: jupiterHeaders(false) });
+      if (!res.ok) throw new Error(await responseError(res, 'Jupiter quote'));
+      const quote = await res.json();
+      if (!quote || !/^\d+$/.test(String(quote.inAmount)) || !/^\d+$/.test(String(quote.outAmount))) {
+        throw new Error('Jupiter returned an invalid quote amount');
+      }
+      if (requestId !== S.swapRequest || S.network !== context.network) return;
+      S.swapQuote = quote;
+      S.swapQuoteContext = context;
+      S.swapInputDecimals = inputDecimals;
+      S.swapOutputDecimals = outputDecimals;
     } catch (err) {
-      S.swapError = (err && err.message) || 'Quote error';
+      if (requestId === S.swapRequest) S.swapError = errorMessage(err, 'Quote error');
       console.error(err);
     } finally {
-      S.swapQuoting = false;
-      renderSwap();
+      if (requestId === S.swapRequest) {
+        S.swapQuoting = false;
+        renderSwap();
+      }
+    }
+  }
+
+  function swapQuoteMatchesForm() {
+    if (!S.swapQuote || !S.swapQuoteContext) return false;
+    try {
+      const f = formValues('form-swap');
+      const inputMint = String(f.inputMint || '').trim() === NATIVE_SOL ? WRAPPED_SOL : String(f.inputMint || '').trim();
+      const outputMint = String(f.outputMint || '').trim();
+      return S.swapQuoteContext.network === S.network &&
+        S.swapQuoteContext.inputMint === inputMint &&
+        S.swapQuoteContext.outputMint === outputMint &&
+        S.swapQuoteContext.amount === String(f.amount).trim() &&
+        S.swapQuoteContext.slippageBps === String(parseIntegerField(f.slippage, 'Slippage (bps)', 0, 10000));
+    } catch (_) {
+      return false;
     }
   }
 
   async function executeSwap() {
-    if (!S.swapQuote) return;
+    if (!S.swapQuote || S.swapLoading) return;
+    if (S.network !== 'mainnet-beta') {
+      S.swapError = 'Jupiter Swap currently supports mainnet-beta only. Switch to MAINNET and request a fresh quote.';
+      renderSwap();
+      return;
+    }
+    if (!swapQuoteMatchesForm()) {
+      clearSwapQuote();
+      S.swapError = 'Swap inputs or network changed. Request a new quote before executing.';
+      renderSwap();
+      return;
+    }
+
+    const requestId = S.swapRequest;
+    const networkAtStart = S.network;
+    const quote = S.swapQuote;
+    const publicKey = Wallet.publicKey;
+    if (!publicKey) {
+      S.swapError = 'Wallet not connected';
+      renderSwap();
+      return;
+    }
     S.swapLoading = true;
+    S.swapError = '';
     renderSwap();
     try {
-      const publicKey = Wallet.publicKey;
-      if (!publicKey) throw new Error('Wallet not connected');
       const connection = getConnection();
-
-      const swapRes = await fetch(`${JUPITER_API}/swap`, {
+      const swapRes = await fetch(`${JUPITER_API.replace(/\/$/, '')}/swap`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jupiterHeaders(true),
         body: JSON.stringify({
-          quoteResponse: S.swapQuote,
+          quoteResponse: quote,
           userPublicKey: publicKey.toString(),
           wrapAndUnwrapSol: true,
           dynamicComputeUnitLimit: true,
           prioritizationFeeLamports: 'auto',
         }),
       });
-      if (!swapRes.ok) throw new Error('Swap tx failed');
+      if (!swapRes.ok) throw new Error(await responseError(swapRes, 'Jupiter swap transaction'));
       const swapData = await swapRes.json();
+      if (requestId !== S.swapRequest || S.network !== networkAtStart || !Wallet.publicKey || !Wallet.publicKey.equals(publicKey)) {
+        throw new Error('Wallet, network, or quote changed while preparing the swap. Request a new quote.');
+      }
+      if (!swapData.swapTransaction) throw new Error('Jupiter response did not include a swap transaction');
 
       const txBuf = base64ToBytes(swapData.swapTransaction);
       const tx = VersionedTransaction.deserialize(txBuf);
       const signed = await Wallet.signTransaction(tx);
       if (!signed) throw new Error('Sign failed');
+      if (requestId !== S.swapRequest || S.network !== networkAtStart || !Wallet.publicKey || !Wallet.publicKey.equals(publicKey) || !swapQuoteMatchesForm()) {
+        throw new Error('Wallet, network, or swap inputs changed before submission. The signed transaction was not sent; request a fresh quote.');
+      }
       const signature = await connection.sendRawTransaction(signed.serialize(), { preflightCommitment: 'confirmed' });
       await confirmTx(connection, signature, tx.message.recentBlockhash, swapData.lastValidBlockHeight);
 
-      S.swapResult = { signature };
+      S.swapResult = { signature, network: networkAtStart };
+      S.swapQuote = null;
+      S.swapQuoteContext = null;
+      S.swapInputDecimals = null;
+      S.swapOutputDecimals = null;
+      refreshWalletBalance(true);
     } catch (err) {
-      S.swapError = (err && err.message) || 'Swap failed';
+      S.swapError = errorMessage(err, 'Swap failed');
       console.error(err);
     } finally {
       S.swapLoading = false;
@@ -491,18 +677,33 @@
     }
   }
 
+  function swapMintLabel(mint) {
+    if (mint === WRAPPED_SOL || mint === NATIVE_SOL) return 'SOL';
+    try { return shortAddr(new PublicKey(mint)); } catch (_) { return 'TOKEN'; }
+  }
+
   function renderSwap() {
     const q = S.swapQuote;
+    const context = S.swapQuoteContext;
+    const networkNote = document.getElementById('swap-network-note');
+    if (networkNote) {
+      networkNote.hidden = S.network === 'mainnet-beta';
+      networkNote.textContent = S.network === 'mainnet-beta'
+        ? ''
+        : 'Jupiter Swap transactions are mainnet-beta only. Switch to MAINNET before requesting a quote or signing.';
+    }
+    const inputAmount = q && context ? Amounts.formatUnits(q.inAmount, context.inputDecimals) : '-';
+    const outputAmount = q && context ? Amounts.formatUnits(q.outAmount, context.outputDecimals) : '-';
     setHTML(
       'swap-quote',
-      q
+      q && context
         ? `<div class="quote-box">
             <h3 class="quote-title">QUOTE DITERIMA</h3>
             <div class="kv-grid">
-              <div><p class="k">INPUT AMOUNT</p><p class="v">${q.inAmount ? (parseInt(q.inAmount) / 1e9).toFixed(6) : '-'} SOL</p></div>
-              <div><p class="k">OUTPUT AMOUNT</p><p class="v">${q.outAmount ? (parseInt(q.outAmount) / 1e6).toFixed(4) : '-'} TOKEN</p></div>
-              <div><p class="k">PRICE IMPACT</p><p class="v">${q.priceImpactPct ? parseFloat(q.priceImpactPct).toFixed(4) + '%' : '-'}</p></div>
-              <div><p class="k">ROUTE</p><p class="v">${q.routePlan ? q.routePlan.length + ' hops' : '-'}</p></div>
+              <div><p class="k">INPUT AMOUNT</p><p class="v">${esc(inputAmount)} ${esc(swapMintLabel(context.inputMint))}</p></div>
+              <div><p class="k">OUTPUT AMOUNT</p><p class="v">${esc(outputAmount)} ${esc(swapMintLabel(context.outputMint))}</p></div>
+              <div><p class="k">PRICE IMPACT</p><p class="v">${q.priceImpactPct != null && Number.isFinite(Number(q.priceImpactPct)) ? Number(q.priceImpactPct).toFixed(4) + '%' : '-'}</p></div>
+              <div><p class="k">ROUTE</p><p class="v">${Array.isArray(q.routePlan) ? q.routePlan.length + ' hops' : '-'}</p></div>
             </div>
           </div>`
         : ''
@@ -513,7 +714,7 @@
         ? `<div class="result-box mt-4">
             <h3 class="result-title">SWAP BERHASIL</h3>
             <p class="result-text truncate">${esc(S.swapResult.signature)}</p>
-            <a href="${txLink(S.swapResult.signature)}" target="_blank" rel="noopener noreferrer" class="result-link">LIHAT TRANSAKSI</a>
+            <a href="${txLink(S.swapResult.signature, S.swapResult.network)}" target="_blank" rel="noopener noreferrer" class="result-link">LIHAT TRANSAKSI</a>
           </div>`
         : ''
     );
@@ -541,7 +742,7 @@
         const res = await S.raydiumCpmm.createPool({
           tokenA: liqForm.mintA,
           tokenB: liqForm.mintB,
-          priceA: parseFloat(liqForm.priceA),
+          priceA: liqForm.priceA,
           amountA: liqForm.amountA, // likuiditas awal (yang kosong dihitung dari PRICE A)
           amountB: liqForm.amountB,
         });
@@ -555,8 +756,8 @@
         const res = await S.raydiumCpmm.deposit({
           poolId: liqForm.poolId,
           mintA: liqForm.mintA, // orientasi A/B mengikuti MINT A di form (jika diisi)
-          amountA: parseFloat(liqForm.amountA),
-          amountB: parseFloat(liqForm.amountB),
+          amountA: liqForm.amountA,
+          amountB: liqForm.amountB,
         });
         S.liqResult = {
           message: `Liquidity added on ${cluster()}.`,
@@ -568,9 +769,9 @@
         const res = await S.raydiumCpmm.withdraw({
           poolId: liqForm.poolId,
           mintA: liqForm.mintA,
-          liquidity: parseFloat(liqForm.liquidity),
-          minAmountA: parseFloat(liqForm.minAmountA || '0'),
-          minAmountB: parseFloat(liqForm.minAmountB || '0'),
+          liquidity: liqForm.liquidity,
+          minAmountA: liqForm.minAmountA || '0',
+          minAmountB: liqForm.minAmountB || '0',
         });
         S.liqResult = {
           message: `Liquidity removed on ${cluster()}.`,
@@ -578,8 +779,9 @@
           signature: res.signature,
         };
       }
+      refreshWalletBalance(true);
     } catch (err) {
-      S.liqError = (err && err.message) || 'Liquidity action failed';
+      S.liqError = errorMessage(err, 'Liquidity action failed');
       console.error(err);
     } finally {
       S.liqLoading = false;
@@ -627,26 +829,33 @@
         const res = await S.raydiumClmm.createPool({
           mintA: clmmForm.mintA,
           mintB: clmmForm.mintB,
-          decimalsA: parseInt(clmmForm.decimalsA, 10) || 9,
-          decimalsB: parseInt(clmmForm.decimalsB, 10) || 9,
-          initialPrice: parseFloat(clmmForm.initialPrice),
-          priceLower: parseFloat(clmmForm.priceLower),
-          priceUpper: parseFloat(clmmForm.priceUpper),
-          feeRate: parseInt(clmmForm.feeRate, 10) || 2500,
+          decimalsA: parseIntegerField(clmmForm.decimalsA, 'Decimals A', 0, 18),
+          decimalsB: parseIntegerField(clmmForm.decimalsB, 'Decimals B', 0, 18),
+          initialPrice: clmmForm.initialPrice,
+          priceLower: clmmForm.priceLower,
+          priceUpper: clmmForm.priceUpper,
+          feeRate: parseIntegerField(clmmForm.feeRate, 'Fee rate', 1, 10000),
           inputAmountA: clmmForm.amountA,
           inputAmountB: clmmForm.amountB,
         });
         S.clmmResult = {
-          message: `Raydium CLMM pool created on ${cluster()}. Range: ${clmmForm.priceLower} – ${clmmForm.priceUpper}`,
+          message: res.positionError
+            ? `CLMM pool created on ${cluster()}, but the initial position failed. Pool: ${res.poolId}`
+            : `Raydium CLMM pool created on ${cluster()}. Range: ${clmmForm.priceLower} – ${clmmForm.priceUpper}`,
           detail: res.positionSignature
             ? `Posisi likuiditas dibuka: ${res.amountA} A + ${res.amountB} B (NFT posisi ${res.nftMint}). Trade fee ${res.tradeFeeRate / 10000}%.`
-            : `Pool dibuat tanpa posisi (isi AMOUNT A/B lalu ADD LIQUIDITY CLMM). Trade fee ${res.tradeFeeRate / 10000}%.`,
+            : res.positionError
+              ? `Pool sudah dibuat dan fee pool telah dibayar. Pool ID terisi di form; perbaiki AMOUNT / rentang lalu gunakan ADD LIQUIDITY CLMM. Detail: ${res.positionError}`
+              : `Pool dibuat tanpa posisi (isi AMOUNT A/B lalu ADD LIQUIDITY CLMM). Trade fee ${res.tradeFeeRate / 10000}%.`,
           signature: res.signature,
           positionSignature: res.positionSignature,
           poolId: res.poolId,
           tickLower: res.tickLower,
           tickUpper: res.tickUpper,
+          positionError: res.positionError,
         };
+        if (res.poolId) document.getElementById('clmm-poolId').value = res.poolId;
+        refreshWalletBalance(true);
       } else if (action === 'deposit') {
         if (!clmmForm.poolId) throw new Error('Pool ID required');
         // Rentang harga form -> tick (dibulatkan ke tickSpacing pool); posisi baru dibuka pada rentang ini
@@ -666,9 +875,10 @@
           tickLower: res.tickLower,
           tickUpper: res.tickUpper,
         };
+        refreshWalletBalance(true);
       }
     } catch (err) {
-      S.clmmError = (err && err.message) || 'CLMM action failed';
+      S.clmmError = errorMessage(err, 'CLMM action failed');
       console.error(err);
     } finally {
       S.clmmLoading = false;
@@ -689,8 +899,9 @@
       'clmm-result',
       r
         ? `<div class="result-box mt-4">
-            <h3 class="result-title">CLMM ACTION BERHASIL</h3>
+            <h3 class="result-title">${r.positionError ? 'POOL BERHASIL DIBUAT — POSISI BELUM TERBUKA' : 'CLMM ACTION BERHASIL'}</h3>
             <p class="result-text">${esc(r.message)}</p>
+            ${r.positionError ? `<div class="alert alert-yellow mono mt-3">Posisi awal gagal; pool tetap tersedia. Jangan buat pool yang sama lagi. Gunakan Pool ID terisi di form untuk mencoba ADD LIQUIDITY CLMM.</div>` : ''}
             ${r.detail ? `<p class="result-sub">${esc(r.detail)}</p>` : ''}
             ${r.poolId ? `<p class="result-sub truncate">Pool ID: ${esc(r.poolId)}</p>` : ''}
             ${r.tickLower !== undefined && r.tickUpper !== undefined ? `<p class="result-sub">Tick Range: ${esc(r.tickLower)} – ${esc(r.tickUpper)}</p>` : ''}
@@ -748,7 +959,7 @@
       S.raydiumClmm = clmmInstance;
       S.raydiumKey = key;
     } catch (err) {
-      S.raydiumError = (err && err.message) || 'Raydium init failed';
+      S.raydiumError = errorMessage(err, 'Raydium init failed');
       console.error(err);
     } finally {
       S.raydiumLoading = false;
@@ -787,15 +998,13 @@
       if (!S.token2022Manager) throw new Error('Token-2022 manager not ready');
 
       const f = formValues('form-t22');
-      const decimals = parseInt(f.decimals, 10);
-      if (isNaN(decimals) || decimals < 0 || decimals > 18) throw new Error('Invalid decimals');
-      const supply = parseFloat(f.initialSupply);
-      if (isNaN(supply) || supply <= 0) throw new Error('Invalid supply');
-      const basisPoints = parseInt(f.transferFeeBasisPoints, 10);
-      if (isNaN(basisPoints) || basisPoints < 0 || basisPoints > 10000) throw new Error('Basis points must be 0-10000');
-      const feeMax = parseInt(f.transferFeeMax, 10);
-      if (isNaN(feeMax) || feeMax < 0) throw new Error('Invalid max fee');
+      const decimals = parseIntegerField(f.decimals, 'Decimals', 0, 18);
+      const supply = String(f.initialSupply || '').trim();
+      if (Amounts.toBaseUnits(supply, decimals) <= 0n) throw new Error('Initial supply must be greater than zero');
+      const basisPoints = parseIntegerField(f.transferFeeBasisPoints, 'Basis points', 0, 10000);
+      const maxFee = Amounts.toUnsignedInteger(f.transferFeeMax || '0', Amounts.U64_MAX, 'Maximum fee').toString();
       const feeRecipient = f.feeRecipient || publicKey.toString();
+      const feeConfigAuthority = f.feeConfigAuthority === 'creator' ? 'creator' : 'immutable';
 
       const res = await S.token2022Manager.createTokenWithFee(
         {
@@ -804,19 +1013,30 @@
           decimals,
           supply,
           transferFeeBasisPoints: basisPoints,
-          transferFeeMax: feeMax,
+          transferFeeMax: maxFee,
           feeRecipient,
+          feeConfigAuthority,
         },
         publicKey,
         (tx) => Wallet.sendTransaction(tx, getConnection())
       );
 
-      S.t22Result = { mint: res.mint, signature: res.signature, decimals: f.decimals, token2022: true };
+      S.t22Result = {
+        mint: res.mint,
+        signature: res.signature,
+        decimals,
+        token2022: true,
+        feeConfigAuthority: res.feeConfigAuthority,
+        feeRecipient: res.feeRecipient,
+        maximumFee: res.maximumFee,
+        transferFeeBasisPoints: basisPoints,
+      };
+      refreshWalletBalance(true);
       // Siapkan kartu klaim fee untuk token yang baru dibuat
       const claimInput = document.getElementById('claim-mint');
       if (claimInput && !claimInput.value) { claimInput.value = res.mint; S.claimScan = null; S.claimResult = null; S.claimError = ''; }
     } catch (err) {
-      S.t22Error = (err && err.message) || 'Token-2022 create failed';
+      S.t22Error = errorMessage(err, 'Token-2022 create failed');
       console.error(err);
     } finally {
       S.t22Loading = false;
@@ -827,15 +1047,16 @@
   function renderT22() {
     let html = '';
     if (S.t22Result) {
-      const f = formValues('form-t22');
-      const pk = Wallet.publicKey;
-      const bps = parseInt(f.transferFeeBasisPoints);
+      const bps = S.t22Result.transferFeeBasisPoints;
+      const maxFee = BigInt(S.t22Result.maximumFee);
+      const feeRecipient = S.t22Result.feeRecipient;
       const feeBox = `
         <div class="fee-box">
-          <p>Fee konfigurasi:</p>
-          <p>• Basis Points: ${esc(f.transferFeeBasisPoints)} bps (${isNaN(bps) ? 'NaN' : (bps / 100).toFixed(2)}%)</p>
-          <p>• Max Fee: ${Number(f.transferFeeMax) > 0 ? esc(f.transferFeeMax) + ' unit terkecil (' + esc(window.Token2022Manager.formatUnits(f.transferFeeMax, parseInt(f.decimals, 10) || 0)) + ' token)' : 'tanpa cap (u64 max)'}</p>
-          <p>• Recipient: ${esc(f.feeRecipient || (pk ? pk.toString().slice(0, 4) + '...' : 'undefined...'))}</p>
+          <p>Fee configuration:</p>
+          <p>• Basis points: ${bps} bps (${(bps / 100).toFixed(2)}%)</p>
+          <p>• Max fee: ${maxFee === Amounts.U64_MAX ? 'uncapped (u64 max)' : `${esc(maxFee.toString())} base units (${esc(Amounts.formatUnits(maxFee, S.t22Result.decimals))} tokens)`}</p>
+          <p>• Fee config authority: ${S.t22Result.feeConfigAuthority ? `creator wallet (${esc(shortAddr(S.t22Result.feeConfigAuthority))}) can change future fees` : 'none — fee configuration is immutable'}</p>
+          <p>• Withdraw-withheld authority: ${feeRecipient ? esc(shortAddr(feeRecipient)) : '—'}</p>
         </div>`;
       html = tokenResultBox('TOKEN-2022 BERHASIL DIBUAT', 'MINT', S.t22Result, feeBox);
     }
@@ -865,7 +1086,7 @@
       new PublicKey(mint); // validasi alamat
       S.claimScan = await getT22Manager().scanWithheldFees(mint);
     } catch (err) {
-      S.claimError = (err && err.message) || 'Gagal memeriksa fee';
+      S.claimError = errorMessage(err, 'Gagal memeriksa fee');
       console.error(err);
     } finally {
       S.claimChecking = false;
@@ -893,9 +1114,10 @@
         sendTransaction: (tx) => Wallet.sendTransaction(tx, connection),
       });
       S.claimResult = res;
+      refreshWalletBalance(true);
       S.claimScan = await manager.scanWithheldFees(mint).catch(() => scan);
     } catch (err) {
-      S.claimError = (err && err.message) || 'Klaim gagal';
+      S.claimError = errorMessage(err, 'Klaim gagal');
       console.error(err);
     } finally {
       S.claimLoading = false;
@@ -1009,8 +1231,9 @@
       await confirmTx(connection, signature, blockhash, lastValidBlockHeight);
 
       S.authResult = { signature, type: S.authorityType };
+      refreshWalletBalance(true);
     } catch (err) {
-      S.authError = (err && err.message) || 'Revoke failed';
+      S.authError = errorMessage(err, 'Revoke failed');
       console.error(err);
     } finally {
       S.authLoading = false;
@@ -1137,7 +1360,7 @@
     try {
       await Wallet.connect(name);
     } catch (err) {
-      S.connectError = (err && err.message) || 'Failed to connect wallet';
+      S.connectError = errorMessage(err, 'Failed to connect wallet');
       console.error('Wallet connect error:', err);
       renderConnect();
     }
@@ -1145,7 +1368,7 @@
 
   /* ==================== NETWORK / WALLET / TAB RENDER ==================== */
   function setNetwork(n) {
-    if (S.network === n) return;
+    if (!['devnet', 'mainnet-beta'].includes(n) || S.network === n || anyOnChainActionInFlight()) return;
     S.network = n;
     onWalletOrNetworkChange();
     renderAll();
@@ -1153,6 +1376,8 @@
 
   function onWalletOrNetworkChange() {
     const pk = Wallet.publicKey;
+    clearSwapQuote();
+    resetWalletBalancePolling();
     // Init Token-2022 manager & Raydium SDK saat wallet connect / jaringan berubah (seperti useEffect asli)
     S.token2022Manager = pk ? new window.Token2022Manager(RPC_URLS[S.network]) : null;
     S.claimScan = null; S.claimResult = null; S.claimError = ''; // hasil pindai fee tidak berlaku lintas wallet/jaringan
@@ -1164,20 +1389,106 @@
     syncRaydium();
   }
 
+  function setNetworkSwitchDisabled() {
+    const busy = anyOnChainActionInFlight();
+    $$('.net-btn, .fn-btn').forEach((button) => { button.disabled = busy; });
+  }
+
   function renderNetwork() {
     const c = cluster();
     document.body.classList.toggle('mainnet', !isDevnet());
     document.getElementById('hdr-cluster').textContent = c.toUpperCase();
     $$('.net-btn').forEach((b) => b.classList.toggle('active', b.dataset.network === S.network));
     $$('.fn-btn').forEach((b) => b.classList.toggle('active', b.dataset.network === S.network));
+    setNetworkSwitchDisabled();
     document.getElementById('quick-explorer').href = `https://explorer.solana.com?cluster=${c}`;
     document.getElementById('status-net').textContent = isDevnet() ? 'DEVNET — TEST TOKENS ONLY' : 'MAINNET — REAL SOL FEES';
+  }
+
+  function renderWalletBalance() {
+    const balanceEl = document.getElementById('wallet-balance');
+    const refreshBtn = document.getElementById('btn-refresh-balance');
+    if (!balanceEl) return;
+    const pk = Wallet.publicKey;
+    if (!pk) {
+      balanceEl.textContent = 'BALANCE — CONNECT WALLET';
+      balanceEl.title = '';
+    } else if (S.walletBalanceLoading) {
+      balanceEl.textContent = `${cluster().toUpperCase()} BALANCE: CHECKING…`;
+      balanceEl.title = '';
+    } else if (S.walletBalanceError) {
+      balanceEl.textContent = `${cluster().toUpperCase()} BALANCE: UNAVAILABLE`;
+      balanceEl.title = S.walletBalanceError;
+    } else if (S.walletBalance != null) {
+      const approximate = !Number.isSafeInteger(Number(S.walletBalance));
+      balanceEl.textContent = `${cluster().toUpperCase()} BALANCE: ${approximate ? '≈' : ''}${Amounts.formatUnits(S.walletBalance, 9)} SOL`;
+      balanceEl.title = approximate
+        ? 'This balance exceeds JavaScript safe-integer precision and may be approximate.'
+        : 'Exact native SOL balance on the selected network';
+    } else {
+      balanceEl.textContent = `${cluster().toUpperCase()} BALANCE: — SOL`;
+      balanceEl.title = '';
+    }
+    if (refreshBtn) {
+      refreshBtn.disabled = !pk || S.walletBalanceLoading;
+      refreshBtn.title = S.walletBalanceLoading ? 'Refreshing wallet balance…' : 'Refresh wallet balance';
+    }
+  }
+
+  async function refreshWalletBalance(force) {
+    const pk = Wallet.publicKey;
+    if (!pk) {
+      S.walletBalance = null;
+      S.walletBalanceLoading = false;
+      S.walletBalanceError = '';
+      renderWalletBalance();
+      return;
+    }
+    if (S.walletBalanceLoading && !force) return;
+    const requestId = ++S.walletBalanceRequest;
+    const address = pk.toString();
+    const network = S.network;
+    S.walletBalanceLoading = true;
+    S.walletBalanceError = '';
+    renderWalletBalance();
+    try {
+      const lamports = await getConnection().getBalance(pk, 'confirmed');
+      if (requestId !== S.walletBalanceRequest || S.network !== network || !Wallet.publicKey || Wallet.publicKey.toString() !== address) return;
+      S.walletBalance = BigInt(lamports);
+    } catch (err) {
+      if (requestId === S.walletBalanceRequest) S.walletBalanceError = errorMessage(err, 'Could not read wallet balance');
+    } finally {
+      if (requestId === S.walletBalanceRequest) {
+        S.walletBalanceLoading = false;
+        renderWalletBalance();
+      }
+    }
+  }
+
+  function resetWalletBalancePolling() {
+    if (walletBalanceTimer) window.clearInterval(walletBalanceTimer);
+    walletBalanceTimer = null;
+    S.walletBalanceRequest += 1;
+    S.walletBalance = null;
+    S.walletBalanceLoading = false;
+    S.walletBalanceError = '';
+    renderWalletBalance();
+    if (Wallet.publicKey) {
+      refreshWalletBalance();
+      walletBalanceTimer = window.setInterval(refreshWalletBalance, 30000);
+    }
+  }
+
+  function anyOnChainActionInFlight() {
+    return S.createLoading || S.cloneLoading || S.swapLoading || S.liqLoading || S.clmmLoading ||
+      S.t22Loading || S.claimLoading || S.authLoading;
   }
 
   function renderWalletStatus() {
     const pk = Wallet.publicKey;
     document.body.classList.toggle('no-wallet', !pk);
     document.getElementById('status-addr').textContent = pk ? shortAddr(pk) : 'DISCONNECTED';
+    renderWalletBalance();
     renderConnect();
   }
 
@@ -1187,6 +1498,7 @@
   }
 
   function renderButtons() {
+    setNetworkSwitchDisabled();
     const pk = !!Wallet.publicKey;
     const C = cluster().toUpperCase();
     const set = (id, disabled, label) => {
@@ -1201,8 +1513,11 @@
     set('btn-clone-fetch', S.cloneFetching || !val('clone-input').trim(), S.cloneFetching ? 'FETCHING...' : 'AMBIL DATA');
     set('btn-clone', S.cloneLoading || !pk, S.cloneLoading ? 'CLONING...' : `CLONE ${C}`);
 
-    set('btn-quote', S.swapLoading || S.swapQuoting || !pk, S.swapLoading || S.swapQuoting ? 'QUOTING...' : 'GET QUOTE');
-    set('btn-swap', S.swapLoading || !S.swapQuote || !pk, S.swapLoading ? 'SWAPPING...' : 'EXECUTE SWAP');
+    const mainnetSwap = S.network === 'mainnet-beta';
+    set('btn-quote', S.swapLoading || S.swapQuoting || !pk || !mainnetSwap,
+      S.swapLoading || S.swapQuoting ? 'QUOTING...' : mainnetSwap ? 'GET QUOTE' : 'MAINNET ONLY');
+    set('btn-swap', S.swapLoading || S.swapQuoting || !S.swapQuote || !pk || !mainnetSwap || !swapQuoteMatchesForm(),
+      S.swapLoading ? 'SWAPPING...' : 'EXECUTE SWAP');
 
     set('btn-liq-create', S.liqLoading || !pk || !val('liq-mintA') || !val('liq-mintB') || !val('liq-priceA'), S.liqLoading ? 'POOLING...' : 'CREATE POOL');
     set('btn-liq-deposit', S.liqLoading || !pk || !val('liq-poolId') || !val('liq-amountA') || !val('liq-amountB'));
@@ -1260,11 +1575,17 @@
 
     // Clone
     document.getElementById('btn-clone-fetch').addEventListener('click', fetchCloneSource);
-    document.getElementById('clone-input').addEventListener('input', renderButtons);
+    document.getElementById('clone-input').addEventListener('input', () => {
+      S.cloneData = null;
+      S.cloneError = '';
+      renderClone();
+    });
 
-    // Swap
+    // Swap: invalidate quotes immediately when any quote parameter changes.
+    document.getElementById('form-swap').addEventListener('input', clearSwapQuote);
     document.getElementById('btn-quote').addEventListener('click', fetchQuote);
     document.getElementById('btn-swap').addEventListener('click', executeSwap);
+    document.getElementById('btn-refresh-balance').addEventListener('click', () => refreshWalletBalance());
 
     // Liquidity CPMM
     document.getElementById('btn-liq-create').addEventListener('click', () => handleLiquidityAction('create'));

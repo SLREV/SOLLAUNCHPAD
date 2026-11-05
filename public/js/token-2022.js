@@ -29,11 +29,19 @@
      */
     async createTokenWithFee(params, payer, sendTransaction) {
       const decimals = params.decimals;
-      const supply = params.supply;
-      const amount = Math.floor(supply * Math.pow(10, decimals));
-      // Penerima fee: authority yang berhak menarik fee tertahan (withheld). Kosong = wallet creator.
+      if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) throw new Error('Decimals must be from 0 to 18');
+      const amount = root.TokenAmounts.toBaseUnits(params.supply, decimals);
+      if (amount <= 0n) throw new Error('Initial supply must be greater than zero');
+      const basisPoints = Number(params.transferFeeBasisPoints);
+      if (!Number.isInteger(basisPoints) || basisPoints < 0 || basisPoints > 10000) {
+        throw new Error('Transfer fee basis points must be from 0 to 10000');
+      }
+      // Withdraw-withheld authority is separate from permission to change the fee configuration.
       const feeRecipient = params.feeRecipient ? new PublicKey(params.feeRecipient) : payer;
-      const maxFee = params.transferFeeMax && Number(params.transferFeeMax) > 0 ? BigInt(params.transferFeeMax) : U64_MAX;
+      const feeConfigAuthorityMode = params.feeConfigAuthority === 'creator' ? 'creator' : 'immutable';
+      const feeConfigAuthority = feeConfigAuthorityMode === 'creator' ? payer : null;
+      const maxFeeInput = root.TokenAmounts.toUnsignedInteger(params.transferFeeMax || '0', U64_MAX, 'Maximum fee');
+      const maxFee = maxFeeInput > 0n ? maxFeeInput : U64_MAX;
 
       // Mint Token-2022 dengan extension TransferFeeConfig butuh ruang lebih besar dari SPL standar (82 byte)
       const mintKeypair = Keypair.generate();
@@ -60,9 +68,9 @@
         //    Basis points: 10000 = 100%, 100 = 1%, 10 = 0.1%
         SplToken.createInitializeTransferFeeConfigInstruction(
           mint,
-          payer, // transfer fee config authority = creator
-          feeRecipient, // withdraw withheld authority = FEE RECIPIENT (berhak menarik fee yang tertahan)
-          params.transferFeeBasisPoints,
+          feeConfigAuthority, // null makes the fee configuration immutable from creation
+          feeRecipient, // withdraw withheld authority (berhak menarik fee yang tertahan)
+          basisPoints,
           maxFee,
           SplToken.TOKEN_2022_PROGRAM_ID
         ),
@@ -99,7 +107,13 @@
       const signature = await sendTransaction(tx);
       await this.connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
 
-      return { mint: mint.toString(), signature, feeRecipient: feeRecipient.toString(), maximumFee: maxFee.toString() };
+      return {
+        mint: mint.toString(),
+        signature,
+        feeRecipient: feeRecipient.toString(),
+        feeConfigAuthority: feeConfigAuthority ? feeConfigAuthority.toString() : null,
+        maximumFee: maxFee.toString(),
+      };
     }
 
     /**
